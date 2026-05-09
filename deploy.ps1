@@ -1,4 +1,4 @@
-# deploy.ps1
+﻿# deploy.ps1
 Write-Host "🔨 Building..." -ForegroundColor Cyan
 npm run build
 
