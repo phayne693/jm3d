@@ -9,8 +9,26 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as MusicaRouteImport } from './routes/musica'
+import { Route as GeradorRouteImport } from './routes/gerador'
+import { Route as EscanearRouteImport } from './routes/escanear'
 import { Route as IndexRouteImport } from './routes/index'
 
+const MusicaRoute = MusicaRouteImport.update({
+  id: '/musica',
+  path: '/musica',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GeradorRoute = GeradorRouteImport.update({
+  id: '/gerador',
+  path: '/gerador',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EscanearRoute = EscanearRouteImport.update({
+  id: '/escanear',
+  path: '/escanear',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -19,28 +37,61 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/escanear': typeof EscanearRoute
+  '/gerador': typeof GeradorRoute
+  '/musica': typeof MusicaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/escanear': typeof EscanearRoute
+  '/gerador': typeof GeradorRoute
+  '/musica': typeof MusicaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/escanear': typeof EscanearRoute
+  '/gerador': typeof GeradorRoute
+  '/musica': typeof MusicaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/escanear' | '/gerador' | '/musica'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/escanear' | '/gerador' | '/musica'
+  id: '__root__' | '/' | '/escanear' | '/gerador' | '/musica'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  EscanearRoute: typeof EscanearRoute
+  GeradorRoute: typeof GeradorRoute
+  MusicaRoute: typeof MusicaRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/musica': {
+      id: '/musica'
+      path: '/musica'
+      fullPath: '/musica'
+      preLoaderRoute: typeof MusicaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/gerador': {
+      id: '/gerador'
+      path: '/gerador'
+      fullPath: '/gerador'
+      preLoaderRoute: typeof GeradorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/escanear': {
+      id: '/escanear'
+      path: '/escanear'
+      fullPath: '/escanear'
+      preLoaderRoute: typeof EscanearRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -53,6 +104,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  EscanearRoute: EscanearRoute,
+  GeradorRoute: GeradorRoute,
+  MusicaRoute: MusicaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
