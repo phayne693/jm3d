@@ -8,6 +8,6 @@ $w.compatibility_flags = @("nodejs_compat")
 $w | ConvertTo-Json -Depth 10 | Set-Content "dist/client/wrangler.json"
 
 Write-Host "🚀 Deploying to Cloudflare..." -ForegroundColor Cyan
-wrangler deploy --config dist/client/wrangler.json --script dist/server/server.js
+npx wrangler deploy --config dist/client/wrangler.json --script dist/server/server.js
 
 Write-Host "✅ Deploy concluído!" -ForegroundColor Green

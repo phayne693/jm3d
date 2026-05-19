@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -ExecutionPolicy Bypass -File deploy.ps1)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(nvm list:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command ':*)",
+      "Bash(npx wrangler:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)"
+    ]
+  }
+}
