@@ -57,7 +57,8 @@ export default function EscanearPage() {
     if (scriptLoaded.current) return;
     scriptLoaded.current = true;
 
-    // Injeta CSS para esconder TODA a UI padrão do Mind AR / A-Frame
+    // Injeta CSS para esconder UI padrão do MindAR/A-Frame
+    // e garantir que o vídeo da câmera preencha o viewport sem distorção
     const hideUI = document.createElement("style");
     hideUI.textContent = `
       .mindar-ui-overlay,
@@ -67,6 +68,18 @@ export default function EscanearPage() {
       .a-orientation-modal,
       .a-enter-vr,
       [class*="mindar-ui"] { display: none !important; }
+
+      /* Vídeo da câmera cobre o viewport inteiro sem distorção */
+      a-scene video,
+      a-scene canvas {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100dvw !important;
+        height: 100dvh !important;
+        object-fit: cover !important;
+        object-position: center !important;
+      }
     `;
     document.head.appendChild(hideUI);
 
@@ -100,7 +113,7 @@ export default function EscanearPage() {
       scene.setAttribute("vr-mode-ui", "enabled: false");
       scene.setAttribute("device-orientation-permission-ui", "enabled: false");
       scene.setAttribute("loading-screen", "enabled: false");
-      scene.style.cssText = "position:absolute;inset:0;width:100%;height:100%;";
+      scene.style.cssText = "position:fixed;inset:0;width:100dvw;height:100dvh;z-index:0;";
 
       const camera = document.createElement("a-camera");
       camera.setAttribute("position", "0 0 0");
@@ -168,11 +181,11 @@ export default function EscanearPage() {
         }
       `}</style>
 
-      {/* Câmera AR — ocupa tudo por baixo */}
-      <div ref={containerRef} className="absolute inset-0" />
+      {/* Câmera AR — fixed para garantir cobertura total do viewport */}
+      <div ref={containerRef} className="fixed inset-0" style={{ zIndex: 0 }} />
 
       {/* Overlay leve para legibilidade do texto */}
-      <div className="absolute inset-0 bg-background/35 pointer-events-none" />
+      <div className="fixed inset-0 bg-background/35 pointer-events-none" style={{ zIndex: 1 }} />
 
       {/* Header */}
       <header className="absolute top-0 inset-x-0 z-10 flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border/30 glass pt-safe">
