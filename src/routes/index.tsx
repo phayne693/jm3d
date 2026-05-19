@@ -2,8 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   Boxes, Sparkles, Lightbulb, Archive, Package, Printer, Wrench, Cog,
   ShieldCheck, Cpu, Truck, Headset, MessageCircle, BookOpen, Star,
-  Instagram, Youtube, Music2, ArrowRight, Check,
+  Instagram, Youtube, Music2, ArrowRight, Check, Menu, X,
 } from "lucide-react";
+import { useState } from "react";
 import heroImg from "@/assets/hero-printer.jpg";
 import logo from "@/assets/jm3d-logo.svg";
 import pLightbox from "@/assets/prod-lightbox.jpg";
@@ -86,14 +87,16 @@ function Logo({ className = "h-14 w-auto object-contain"}: { className?: string 
 }
 
 function Header() {
+  const [mobileOpen, setMobileOpen] = useState(false);
+
   return (
-    <header className="fixed top-0 inset-x-0 z-50">
-      <div className="mx-auto max-w-[1600px] px-6 mt-4">
+    <header className="fixed top-0 inset-x-0 z-50 pt-safe">
+      <div className="mx-auto max-w-[1600px] px-4 sm:px-6 mt-2 lg:mt-4">
 
         {/* CONTAINER */}
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-4 lg:gap-8">
 
-          {/* LOGO */}
+          {/* LOGO — desktop */}
           <a
             href="#inicio"
             className="
@@ -144,8 +147,10 @@ function Header() {
 
               rounded-2xl
 
-              px-8
-              py-4
+              px-4
+              sm:px-8
+              py-3
+              sm:py-4
 
               flex
               items-center
@@ -157,8 +162,12 @@ function Header() {
               border-primary/10
             "
           >
+            {/* Mobile: logo + hamburger */}
+            <a href="#inicio" className="lg:hidden shrink-0">
+              <Logo className="h-8 w-auto object-contain" />
+            </a>
 
-            {/* MENU */}
+            {/* MENU — desktop */}
             <nav className="hidden lg:flex items-center gap-10 text-sm text-muted-foreground">
               {nav.map((n) => (
                 <a
@@ -175,7 +184,7 @@ function Header() {
               ))}
             </nav>
 
-            {/* CTA */}
+            {/* CTA — desktop */}
             <a
               href={WHATSAPP}
               target="_blank"
@@ -199,6 +208,7 @@ function Header() {
 
                 text-sm
                 font-medium
+                min-h-[44px]
 
                 text-foreground
 
@@ -213,8 +223,42 @@ function Header() {
               Solicitar Orçamento
             </a>
 
+            {/* Hamburger — mobile */}
+            <button
+              onClick={() => setMobileOpen(!mobileOpen)}
+              className="lg:hidden flex items-center justify-center h-11 w-11 rounded-xl text-foreground"
+              aria-label={mobileOpen ? "Fechar menu" : "Abrir menu"}
+            >
+              {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+            </button>
           </div>
         </div>
+
+        {/* Mobile nav drawer */}
+        {mobileOpen && (
+          <nav className="lg:hidden mt-2 glass rounded-2xl border border-primary/10 px-4 py-4 flex flex-col gap-1 backdrop-blur-xl">
+            {nav.map((n) => (
+              <a
+                key={n.href}
+                href={n.href}
+                onClick={() => setMobileOpen(false)}
+                className="flex items-center px-4 py-3 rounded-xl text-base text-muted-foreground hover:text-foreground hover:bg-primary/10 transition-colors min-h-[44px]"
+              >
+                {n.label}
+              </a>
+            ))}
+            <a
+              href={WHATSAPP}
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => setMobileOpen(false)}
+              className="mt-2 inline-flex items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-5 py-3 text-base font-medium text-foreground hover:bg-primary/20 glow-border transition min-h-[44px]"
+            >
+              <MessageCircle className="h-4 w-4 text-primary" />
+              Solicitar Orçamento
+            </a>
+          </nav>
+        )}
       </div>
     </header>
   );
@@ -222,8 +266,8 @@ function Header() {
 
 function Hero() {
   return (
-    <section id="inicio" className="relative pt-48 pb-20 bg-hero overflow-hidden">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 grid lg:grid-cols-2 gap-12 items-center">
+    <section id="inicio" className="relative pt-28 sm:pt-36 lg:pt-48 pb-12 sm:pb-20 bg-hero overflow-hidden">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 grid lg:grid-cols-2 gap-8 lg:gap-12 items-center">
         <div className="animate-fade-up">
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold leading-[1.05] tracking-tight">
             Impressão 3D{" "}
@@ -235,11 +279,11 @@ function Hero() {
           </p>
           <div className="mt-8 flex flex-wrap gap-4">
             <a href={WHATSAPP} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 font-semibold text-primary-foreground hover:opacity-90 glow-strong transition">
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3.5 font-semibold text-base text-primary-foreground hover:opacity-90 glow-strong transition min-h-[44px]">
               <MessageCircle className="h-5 w-5" /> Solicitar Orçamento
             </a>
             <a href="#produtos"
-              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card/60 px-6 py-3 font-semibold hover:border-primary/60 transition">
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card/60 px-6 py-3.5 font-semibold text-base hover:border-primary/60 transition min-h-[44px]">
               <BookOpen className="h-5 w-5" /> Ver Catálogo
             </a>
           </div>
@@ -278,14 +322,14 @@ function Services() {
           </h2>
           <p className="mt-2 text-muted-foreground">Soluções completas em impressão 3D e fabricação digital</p>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           {services.map((s) => (
             <div key={s.title} className="glass hover-glow rounded-2xl p-5 text-center">
               <div className="mx-auto h-12 w-12 rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center text-primary mb-4">
                 <s.icon className="h-6 w-6" />
               </div>
-              <h3 className="font-semibold text-sm mb-1">{s.title}</h3>
-              <p className="text-xs text-muted-foreground">{s.desc}</p>
+              <h3 className="font-semibold text-base sm:text-sm mb-1">{s.title}</h3>
+              <p className="text-sm sm:text-xs text-muted-foreground">{s.desc}</p>
             </div>
           ))}
         </div>
@@ -309,7 +353,7 @@ function Products() {
             Ver catálogo completo <ArrowRight className="h-4 w-4" />
           </a>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 sm:gap-4">
           {products.map((p) => (
             <div key={p.name} className="glass hover-glow rounded-2xl overflow-hidden flex flex-col">
               <div className="aspect-square overflow-hidden bg-surface">
@@ -320,8 +364,8 @@ function Products() {
                 <h3 className="text-sm font-semibold leading-tight">{p.name}</h3>
                 <div className="text-xs text-muted-foreground mt-1 mb-3">{p.price}</div>
                 <a href={WHATSAPP} target="_blank" rel="noreferrer"
-                  className="mt-auto inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary/15 border border-primary/40 text-xs py-2 hover:bg-primary/25 transition">
-                  <MessageCircle className="h-3.5 w-3.5 text-primary" /> Comprar no WhatsApp
+                  className="mt-auto inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary/15 border border-primary/40 text-xs sm:text-xs py-2.5 min-h-[44px] hover:bg-primary/25 transition">
+                  <MessageCircle className="h-3.5 w-3.5 text-primary" /> Comprar
                 </a>
               </div>
             </div>
@@ -344,7 +388,7 @@ function HowItWorks() {
         </div>
         <div className="relative">
           <div className="hidden md:block absolute top-8 left-[10%] right-[10%] h-px bg-gradient-to-r from-transparent via-primary to-transparent" />
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-8">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-6 sm:gap-8">
             {steps.map((s) => (
               <div key={s.n} className="relative text-center">
                 <div className="mx-auto relative h-16 w-16 rounded-full bg-card border border-primary/40 flex items-center justify-center text-2xl font-bold text-gradient glow-border mb-4">
@@ -369,7 +413,7 @@ function Gallery() {
           <h2 className="text-3xl sm:text-4xl font-bold">Galeria</h2>
           <p className="mt-2 text-muted-foreground">Veja alguns dos nossos trabalhos</p>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {gallery.map((src, i) => (
             <div key={i} className="group relative aspect-square overflow-hidden rounded-xl border border-border hover:border-primary/60 transition">
               <img src={src} alt={`Trabalho JM3D ${i + 1}`} loading="lazy" width={640} height={640}
@@ -453,7 +497,7 @@ function CTA() {
               Fale com a JM3D e transforme sua ideia em realidade.
             </p>
             <a href={WHATSAPP} target="_blank" rel="noreferrer"
-              className="mt-8 inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-4 font-semibold text-primary-foreground hover:opacity-90 glow-strong transition">
+              className="mt-8 inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-4 font-semibold text-base text-primary-foreground hover:opacity-90 glow-strong transition min-h-[44px]">
               <MessageCircle className="h-5 w-5" /> Falar no WhatsApp
             </a>
           </div>
@@ -493,7 +537,7 @@ function Footer() {
   ];
 
   return (
-    <footer className="border-t border-border py-12 mt-10">
+    <footer className="border-t border-border py-12 mt-10 pb-safe">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 grid md:grid-cols-2 lg:grid-cols-5 gap-10">
 
         {/* BRAND */}
@@ -556,12 +600,12 @@ function Footer() {
             Links Rápidos
           </div>
 
-          <ul className="space-y-2 text-sm">
+          <ul className="space-y-1 text-sm">
             {nav.map((n) => (
               <li key={n.href}>
                 <a
                   href={n.href}
-                  className="hover:text-primary transition"
+                  className="hover:text-primary transition inline-flex items-center min-h-[44px] sm:min-h-0 py-1"
                 >
                   {n.label}
                 </a>
@@ -618,7 +662,7 @@ function Footer() {
 function FloatingWhats() {
   return (
     <a href={WHATSAPP} target="_blank" rel="noreferrer" aria-label="WhatsApp"
-      className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-green-500 text-white shadow-2xl flex items-center justify-center hover:scale-110 transition">
+      className="fixed z-50 h-14 w-14 rounded-full bg-green-500 text-white shadow-2xl flex items-center justify-center hover:scale-110 transition" style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom, 0px))", right: "1.5rem" }}>
       <MessageCircle className="h-6 w-6" />
     </a>
   );
@@ -626,7 +670,7 @@ function FloatingWhats() {
 
 function Index() {
   return (
-    <div className="dark min-h-screen">
+    <div className="dark min-h-dvh">
       <Header />
       <main>
         <Hero />

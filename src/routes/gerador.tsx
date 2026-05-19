@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Upload, Download, RotateCcw, Music2, MessageCircle, ScanLine, CheckCircle2, Loader2 } from "lucide-react";
 import logo from "@/assets/jm3d-logo.svg";
 
@@ -129,50 +129,79 @@ function Slider({
       <input
         type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full accent-primary h-0.5 bg-border rounded cursor-pointer"
+        className="w-full accent-primary h-2 bg-border rounded cursor-pointer"
+        style={{ touchAction: "none" }}
       />
     </div>
   );
 }
 
-// ─── Mind AR compiler ─────────────────────────────────────────────────────────
-// Retorna o construtor Compiler independente do namespace que a lib usar
-function getMindARCompiler(): new () => any {
-  const w = window as any;
+// ─── style preview canvas ────────────────────────────────────────────────────
+function StylePreviewCanvas({
+  waveData,
+  settings,
+  style,
+}: {
+  waveData: number[];
+  settings: Settings;
+  style: Settings["style"];
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
 
-  // Tentativas de namespace conhecidos do Mind AR
-  if (w.MINDAR?.Image?.Compiler)       return w.MINDAR.Image.Compiler;
-  if (w.MindAR?.Image?.Compiler)       return w.MindAR.Image.Compiler;
-  if (w.mindar?.image?.Compiler)       return w.mindar.image.Compiler;
-  if (w.MindARImage?.Compiler)         return w.MindARImage.Compiler;
+  useEffect(() => {
+    if (ref.current && waveData.length) {
+      const W = ref.current.offsetWidth * devicePixelRatio || 200;
+      drawWaveOnCanvas(ref.current, waveData, { ...settings, style }, W, 50);
+    }
+  }, [waveData, settings, style]);
 
-  // Busca genérica: procura qualquer chave no window que tenha .Compiler
-  for (const key of Object.keys(w)) {
-    if (w[key]?.Image?.Compiler)       return w[key].Image.Compiler;
-    if (w[key]?.Compiler && key.toLowerCase().includes("mind")) return w[key].Compiler;
-  }
-
-  throw new Error(
-    "Compilador Mind AR não encontrado no window. Verifique se o bundle carregou corretamente."
+  return (
+    <canvas
+      ref={ref}
+      style={{ width: "100%", height: "50px", display: "block" }}
+    />
   );
 }
+
+// ─── Mind AR compiler ─────────────────────────────────────────────────────────
+// Aguarda até 3s pelo namespace do MindAR no window (o bundle pode demorar um tick)
+async function getMindARCompiler(): Promise<new () => any> {
+  const w = window as any;
+  for (let i = 0; i < 30; i++) {
+    if (w.MINDAR?.Image?.Compiler)  return w.MINDAR.Image.Compiler;
+    if (w.MindAR?.Image?.Compiler)  return w.MindAR.Image.Compiler;
+    if (w.mindar?.image?.Compiler)  return w.mindar.image.Compiler;
+    if (w.MindARImage?.Compiler)    return w.MindARImage.Compiler;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error(
+    "Compilador Mind AR não encontrado. Recarregue a página e tente novamente."
+  );
+}
+
+// Promise singleton — evita carregar o bundle 2x em chamadas simultâneas
+let mindARLoadPromise: Promise<void> | null = null;
 
 async function compileMind(
   imageDataUrl: string,
   onProgress: (msg: string) => void
 ): Promise<Blob> {
-  // Carrega o compilador do Mind AR (só na primeira vez — fica cacheado)
-  if (!(window as any).MINDAR_COMPILER_LOADED) {
+  // Carrega o compilador do Mind AR (só na primeira vez — Promise singleton garante thread-safety)
+  if (!mindARLoadPromise) {
     onProgress("Carregando compilador Mind AR…");
-    await new Promise<void>((res, rej) => {
+    mindARLoadPromise = new Promise<void>((res, rej) => {
       const s = document.createElement("script");
       // Bundle standalone que expõe o compilador sem depender do A-Frame
       s.src = "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js";
-      s.onload = () => { (window as any).MINDAR_COMPILER_LOADED = true; res(); };
-      s.onerror = () => rej(new Error("Falha ao carregar compilador Mind AR"));
+      s.onload = () => res();
+      s.onerror = () => {
+        mindARLoadPromise = null; // permite retry em próxima chamada
+        rej(new Error("Falha ao carregar compilador Mind AR"));
+      };
       document.head.appendChild(s);
     });
   }
+  await mindARLoadPromise;
 
   onProgress("Compilando target de imagem…");
 
@@ -189,8 +218,8 @@ async function compileMind(
   tmp.height = img.height;
   tmp.getContext("2d")!.drawImage(img, 0, 0);
 
-  // Instancia o compilador via busca dinâmica de namespace
-  const Compiler = getMindARCompiler();
+  // Aguarda namespace do compilador (async — pode demorar ticks após script load)
+  const Compiler = await getMindARCompiler();
   const compiler = new Compiler();
 
   await compiler.compileImageTargets([tmp], (p: number) => {
@@ -200,6 +229,19 @@ async function compileMind(
   onProgress("Exportando arquivo .mind…");
   const exportedBuffer = await compiler.exportData();
   return new Blob([exportedBuffer], { type: "application/octet-stream" });
+}
+
+// ─── helpers de extração ─────────────────────────────────────────────────────
+function extractWaveData(raw: Float32Array, bars: number, minH: number): number[] {
+  const step = Math.max(1, Math.floor(raw.length / bars));
+  const data: number[] = [];
+  for (let i = 0; i < bars; i++) {
+    let sum = 0;
+    for (let j = 0; j < step; j++) sum += Math.abs(raw[i * step + j] ?? 0);
+    data.push(sum / step);
+  }
+  const max = Math.max(...data) || 1;
+  return data.map(v => Math.max(minH / 100, v / max));
 }
 
 // ─── main component ──────────────────────────────────────────────────────────
@@ -216,6 +258,8 @@ function GeradorPage() {
   const previewRef = useRef<HTMLCanvasElement>(null);
   const chaveiroRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Guarda o áudio bruto para re-extração quando bars/minH mudam
+  const rawAudioRef = useRef<Float32Array | null>(null);
 
   const set = (partial: Partial<Settings>) =>
     setS(prev => ({ ...prev, ...partial }));
@@ -277,11 +321,14 @@ function GeradorPage() {
     redraw(waveData, next);
   };
 
-  const reExtract = async (partial: Partial<Settings>) => {
+  // reExtract: re-processa o áudio bruto com os novos parâmetros (bars / minH)
+  const reExtract = (partial: Partial<Settings>) => {
     const next = { ...s, ...partial };
     set(partial);
-    if (!waveData.length) return;
-    redraw(waveData, next);
+    if (!rawAudioRef.current) return;
+    const newData = extractWaveData(rawAudioRef.current, next.bars, next.minH);
+    setWaveData(newData);
+    redraw(newData, next);
   };
 
   const handleFile = async (file: File) => {
@@ -293,25 +340,15 @@ function GeradorPage() {
       const arrayBuf = await file.arrayBuffer();
       const audioCtx = new AudioContext();
       const buffer = await audioCtx.decodeAudioData(arrayBuf);
+      await audioCtx.close();
 
       const mins = Math.floor(buffer.duration / 60);
       const secs = Math.floor(buffer.duration % 60).toString().padStart(2, "0");
       setDuration(`${mins}:${secs}`);
 
       const raw = buffer.getChannelData(0);
-      const bars = s.bars;
-      const step = Math.floor(raw.length / bars);
-      const minH = s.minH / 100;
-      const data: number[] = [];
-
-      for (let i = 0; i < bars; i++) {
-        let sum = 0;
-        for (let j = 0; j < step; j++) sum += Math.abs(raw[i * step + j] ?? 0);
-        data.push(sum / step);
-      }
-
-      const max = Math.max(...data) || 1;
-      const normalized = data.map(v => Math.max(minH, v / max));
+      rawAudioRef.current = raw;
+      const normalized = extractWaveData(raw, s.bars, s.minH);
       setWaveData(normalized);
       redraw(normalized, s);
       setStatus({ msg: "Waveform gerada com sucesso ✓", ok: true });
@@ -427,6 +464,7 @@ function GeradorPage() {
     setStatus(null);
     setMindStatus("idle");
     setMindMsg("");
+    rawAudioRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (previewRef.current) {
       const ctx = previewRef.current.getContext("2d")!;
@@ -437,22 +475,23 @@ function GeradorPage() {
   const isCompiling = mindStatus === "loading-lib" || mindStatus === "compiling";
 
   return (
-    <div className="dark min-h-screen bg-background">
+    <div className="dark min-h-dvh bg-background">
 
-      <header className="border-b border-border/50 px-6 py-4 flex items-center justify-between">
-        <a href="/">
+      <header className="border-b border-border/50 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between pt-safe">
+        <a href="/" className="min-h-[44px] flex items-center">
           <img src={logo} alt="JM3D" className="h-10 w-auto" />
         </a>
         <a
           href={WHATSAPP} target="_blank" rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-medium hover:bg-primary/20 transition"
+          className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2.5 text-sm font-medium hover:bg-primary/20 transition min-h-[44px]"
         >
           <MessageCircle className="h-4 w-4 text-primary" />
-          Solicitar Orçamento
+          <span className="hidden sm:inline">Solicitar Orçamento</span>
+          <span className="sm:hidden">Orçamento</span>
         </a>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 sm:px-6 py-12 flex flex-col gap-8">
+      <main className="mx-auto max-w-4xl px-4 sm:px-6 py-8 sm:py-12 flex flex-col gap-6 sm:gap-8 pb-safe">
 
         <div>
           <h1 className="text-3xl sm:text-4xl font-bold">
@@ -468,7 +507,7 @@ function GeradorPage() {
           onDrop={handleDrop}
           onDragOver={e => e.preventDefault()}
           onClick={() => fileInputRef.current?.click()}
-          className="glass rounded-2xl border-2 border-dashed border-border hover:border-primary/60 transition cursor-pointer p-10 text-center group"
+          className="glass rounded-2xl border-2 border-dashed border-border hover:border-primary/60 transition cursor-pointer p-6 sm:p-10 text-center group min-h-[120px] flex flex-col items-center justify-center"
         >
           <input
             ref={fileInputRef}
@@ -522,7 +561,7 @@ function GeradorPage() {
               <select
                 value={s.style}
                 onChange={e => update({ style: e.target.value as Settings["style"] })}
-                className="rounded-xl border border-border bg-card text-sm px-3 py-2 text-foreground focus:outline-none focus:border-primary"
+                className="rounded-xl border border-border bg-card text-base sm:text-sm px-3 py-2.5 sm:py-2 text-foreground focus:outline-none focus:border-primary min-h-[44px] sm:min-h-0"
               >
                 <option value="bars">Barras simétricas</option>
                 <option value="top">Barras topo</option>
@@ -535,7 +574,7 @@ function GeradorPage() {
               <select
                 value={s.format}
                 onChange={e => set({ format: e.target.value as Settings["format"] })}
-                className="rounded-xl border border-border bg-card text-sm px-3 py-2 text-foreground focus:outline-none focus:border-primary"
+                className="rounded-xl border border-border bg-card text-base sm:text-sm px-3 py-2.5 sm:py-2 text-foreground focus:outline-none focus:border-primary min-h-[44px] sm:min-h-0"
               >
                 <option value="svg">SVG — para slicer 3D</option>
                 <option value="png-dark">PNG — fundo escuro</option>
@@ -554,7 +593,7 @@ function GeradorPage() {
                     key={c}
                     onClick={() => update({ waveColor: c })}
                     style={{ background: c }}
-                    className={`h-7 w-7 rounded-md border transition hover:scale-110 ${s.waveColor === c ? "border-primary ring-1 ring-primary ring-offset-1 ring-offset-background" : "border-border"}`}
+                    className={`h-10 w-10 sm:h-8 sm:w-8 rounded-lg sm:rounded-md border transition hover:scale-110 ${s.waveColor === c ? "border-primary ring-2 ring-primary ring-offset-2 ring-offset-background" : "border-border"}`}
                   />
                 ))}
               </div>
@@ -571,7 +610,7 @@ function GeradorPage() {
                         ? { backgroundImage: "repeating-conic-gradient(#555 0% 25%, #222 0% 50%)", backgroundSize: "10px 10px" }
                         : { background: c }
                     }
-                    className={`h-7 w-7 rounded-md border transition hover:scale-110 ${s.bgColor === c ? "border-primary ring-1 ring-primary ring-offset-1 ring-offset-background" : "border-border"}`}
+                    className={`h-10 w-10 sm:h-8 sm:w-8 rounded-lg sm:rounded-md border transition hover:scale-110 ${s.bgColor === c ? "border-primary ring-2 ring-primary ring-offset-2 ring-offset-background" : "border-border"}`}
                   />
                 ))}
               </div>
@@ -586,6 +625,35 @@ function GeradorPage() {
             <canvas ref={previewRef} style={{ width: "100%", height: "100px", display: "block" }} />
           </div>
         </div>
+
+        {/* comparacao de estilos */}
+        {waveData.length > 0 && (
+          <div className="glass rounded-2xl p-6 flex flex-col gap-4">
+            <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
+              Comparação de estilos
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {(["bars", "top", "mirror", "line"] as const).map((styleOpt) => (
+                <button
+                  key={styleOpt}
+                  onClick={() => update({ style: styleOpt })}
+                  className={`flex flex-col gap-1.5 rounded-xl border p-2 transition cursor-pointer ${
+                    s.style === styleOpt
+                      ? "border-primary bg-primary/10"
+                      : "border-border hover:border-primary/40"
+                  }`}
+                >
+                  <StylePreviewCanvas
+                    waveData={waveData}
+                    settings={s}
+                    style={styleOpt}
+                  />
+                  <span className="text-xs text-center text-muted-foreground capitalize">{styleOpt}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* preview chaveiro */}
         <div className="glass rounded-2xl p-6 flex flex-col gap-3">
@@ -653,7 +721,7 @@ function GeradorPage() {
             <button
               onClick={generateMind}
               disabled={isCompiling || !waveData.length}
-              className="self-start inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 glow-strong transition disabled:opacity-40 disabled:cursor-not-allowed"
+              className="self-start inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-base sm:text-sm font-semibold text-primary-foreground hover:opacity-90 glow-strong transition disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]"
             >
               {isCompiling ? (
                 <>
@@ -676,18 +744,18 @@ function GeradorPage() {
         )}
 
         {/* actions */}
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <button
             onClick={exportWave}
             disabled={!waveData.length}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary/10 border border-primary/40 px-6 py-3 text-sm font-medium hover:bg-primary/20 transition disabled:opacity-30 disabled:cursor-not-allowed glow-border"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary/10 border border-primary/40 px-6 py-3 text-base sm:text-sm font-medium hover:bg-primary/20 transition disabled:opacity-30 disabled:cursor-not-allowed glow-border min-h-[44px]"
           >
             <Download className="h-4 w-4 text-primary" />
             Exportar Waveform
           </button>
           <button
             onClick={reset}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-6 py-3 text-sm font-medium hover:border-primary/40 transition"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-6 py-3 text-base sm:text-sm font-medium hover:border-primary/40 transition min-h-[44px]"
           >
             <RotateCcw className="h-4 w-4" />
             Reiniciar

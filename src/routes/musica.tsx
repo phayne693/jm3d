@@ -1,6 +1,6 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Play, Pause, Music2, MessageCircle } from "lucide-react";
+import { Play, Pause, Music2, MessageCircle, Share2 } from "lucide-react";
 import logo from "@/assets/jm3d-logo.svg";
 
 export const Route = createFileRoute("/musica")({
@@ -43,10 +43,30 @@ export default function MusicaPage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
+  const lastSaveRef = useRef<number>(0);
+
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [ready, setReady] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  function roundRectPath(
+    c: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number, r: number
+  ) {
+    const rr = Math.min(r, w / 2, h / 2);
+    c.moveTo(x + rr, y);
+    c.lineTo(x + w - rr, y);
+    c.quadraticCurveTo(x + w, y, x + w, y + rr);
+    c.lineTo(x + w, y + h - rr);
+    c.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    c.lineTo(x + rr, y + h);
+    c.quadraticCurveTo(x, y + h, x, y + h - rr);
+    c.lineTo(x, y + rr);
+    c.quadraticCurveTo(x, y, x + rr, y);
+    c.closePath();
+  }
 
   function drawBars() {
     const canvas = canvasRef.current;
@@ -79,7 +99,7 @@ export default function MusicaPage() {
       grad.addColorStop(1, "rgba(0,140,255,0.5)");
 
       c.beginPath();
-      c.roundRect(x, y, bw, h, 2);
+      roundRectPath(c, x, y, bw, h, 2);
       c.fillStyle = grad;
       c.fill();
     }
@@ -102,17 +122,24 @@ export default function MusicaPage() {
   }
 
   async function togglePlay() {
-    const audio = audioRef.current!;
-    if (!analyserRef.current) await setupAnalyser();
-    if (audioCtxRef.current?.state === "suspended")
-      await audioCtxRef.current.resume();
+    try {
+      const audio = audioRef.current!;
+      if (!analyserRef.current) await setupAnalyser();
+      if (audioCtxRef.current?.state === "suspended")
+        await audioCtxRef.current.resume();
 
-    if (playing) {
-      audio.pause();
+      if (playing) {
+        audio.pause();
+        cancelAnimationFrame(animRef.current);
+        setPlaying(false);
+      } else {
+        await audio.play();
+        drawBars();
+        setPlaying(true);
+      }
+    } catch (err) {
+      console.error("Erro ao reproduzir áudio:", err);
       setPlaying(false);
-    } else {
-      audio.play();
-      setPlaying(true);
     }
   }
 
@@ -126,17 +153,17 @@ export default function MusicaPage() {
   const progress = duration ? (current / duration) * 100 : 0;
 
   return (
-    <div className="dark min-h-screen bg-background flex flex-col">
+    <div className="dark min-h-dvh bg-background flex flex-col">
       {/* Header igual ao site */}
-      <header className="border-b border-border/50 px-6 py-4 flex items-center justify-between">
-        <a href="/">
+      <header className="border-b border-border/50 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between pt-safe">
+        <a href="/" className="min-h-[44px] flex items-center">
           <img src={logo} alt="JM3D" className="h-10 w-auto object-contain" />
         </a>
         <a
           href={WHATSAPP}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-medium text-foreground hover:bg-primary/20 hover:border-primary glow-border transition"
+          className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2.5 text-sm font-medium text-foreground hover:bg-primary/20 hover:border-primary glow-border transition min-h-[44px]"
         >
           <MessageCircle className="h-4 w-4 text-primary" />
           Quero o meu
@@ -183,11 +210,32 @@ export default function MusicaPage() {
             <p className="mt-1 text-sm text-primary">{info.artist}</p>
           </div>
 
+          {/* Botão compartilhar */}
+          <button
+            onClick={async () => {
+              if (navigator.share) {
+                await navigator.share({
+                  title: info.name,
+                  text: `Ouça "${info.name}" de ${info.artist}`,
+                  url: window.location.href,
+                });
+              } else {
+                await navigator.clipboard.writeText(window.location.href);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }
+            }}
+            className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition border border-border/40 hover:border-border glass"
+          >
+            <Share2 className="h-4 w-4" />
+            {copied ? "Link copiado!" : "Compartilhar"}
+          </button>
+
           {/* Visualizador ao vivo */}
           <div className="w-full glass rounded-2xl p-4 border border-primary/10">
             <canvas
               ref={canvasRef}
-              width={320}
+              width={600}
               height={60}
               className="w-full h-[60px]"
             />
@@ -196,7 +244,7 @@ export default function MusicaPage() {
           {/* Barra de progresso */}
           <div className="w-full flex flex-col gap-2">
             <div
-              className="w-full h-1 rounded-full bg-border cursor-pointer relative"
+              className="w-full py-5 cursor-pointer relative -my-4"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const pct = (e.clientX - rect.left) / rect.width;
@@ -204,11 +252,13 @@ export default function MusicaPage() {
                   audioRef.current.currentTime = pct * duration;
               }}
             >
-              <div
-                className="h-full rounded-full bg-primary transition-all relative"
-                style={{ width: `${progress}%` }}
-              >
-                <div className="absolute -right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 rounded-full bg-primary shadow-[0_0_8px_rgba(0,140,255,0.8)]" />
+              <div className="w-full h-1 rounded-full bg-border relative">
+                <div
+                  className="h-full rounded-full bg-primary transition-all relative"
+                  style={{ width: `${progress}%` }}
+                >
+                  <div className="absolute -right-2 top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-primary shadow-[0_0_8px_rgba(0,140,255,0.8)]" />
+                </div>
               </div>
             </div>
             <div className="flex justify-between text-xs text-muted-foreground">
@@ -238,11 +288,25 @@ export default function MusicaPage() {
             ref={audioRef}
             src={info.audio}
             onLoadedMetadata={(e) => {
-              setDuration(e.currentTarget.duration);
+              const audio = e.currentTarget;
+              setDuration(audio.duration);
               setReady(true);
+              const saved = localStorage.getItem(`jm3d-pos-${track}`);
+              if (saved) audio.currentTime = parseFloat(saved);
             }}
-            onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
-            onEnded={() => setPlaying(false)}
+            onTimeUpdate={(e) => {
+              const t = e.currentTarget.currentTime;
+              setCurrent(t);
+              const now = Date.now();
+              if (now - lastSaveRef.current >= 5000) {
+                localStorage.setItem(`jm3d-pos-${track}`, String(t));
+                lastSaveRef.current = now;
+              }
+            }}
+            onEnded={() => {
+              setPlaying(false);
+              localStorage.removeItem(`jm3d-pos-${track}`);
+            }}
           />
 
           {/* CTA */}
@@ -255,7 +319,7 @@ export default function MusicaPage() {
               href={WHATSAPP}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 glow-strong transition"
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-base font-semibold text-primary-foreground hover:opacity-90 glow-strong transition min-h-[44px]"
             >
               <MessageCircle className="h-4 w-4" />
               Solicitar Orçamento
@@ -265,7 +329,7 @@ export default function MusicaPage() {
         </div>
       </main>
 
-      <footer className="border-t border-border/50 py-4 text-center text-xs text-muted-foreground">
+      <footer className="border-t border-border/50 py-4 text-center text-xs text-muted-foreground pb-safe">
         © 2026 JM3D — Imagine. Crie. Imprima.
       </footer>
     </div>

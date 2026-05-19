@@ -1,0 +1,181 @@
+================================================================================
+  JM3D — FEATURES & CORREÇÕES PENDENTES
+  Gerado em: 2026-05-18
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ROTA: /escanear  (Realidade Aumentada via MindAR — marker tracking)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[CRÍTICO] Script A-Frame e MindAR carregados sem retry
+  - Se o CDN falhar, o erro é permanente — não há tentativa de reload
+  - Implementar retry automático (3 tentativas com backoff) ou fallback de CDN
+
+[CRÍTICO] Redirect hardcoded para /musica?track=patricia
+  - Linha 96: window.location.href = "/musica?track=patricia"
+  - O track deve ser dinâmico (ex: lido do arquivo .mind ou de um QR code)
+  - Suporte a múltiplos chaveiros com tracks diferentes
+
+[AVISO] Cast `as any` no createElement("a-scene")
+  - Linha 62: usar interface tipada para o elemento A-Frame
+  - Criar interface AFrameScene estendendo HTMLElement
+
+[FEATURE] Suporte a múltiplos targets AR
+  - Atualmente só reconhece targetIndex: 0
+  - Implementar mapeamento targetIndex → track (patricia, novo_cliente, etc.)
+
+[FEATURE] Melhorar feedback visual durante scan
+  - Mostrar progresso de carregamento percentual
+  - Animação mais rica no estado "found"
+  - Vibração háptica (navigator.vibrate) ao reconhecer o target
+
+[FEATURE] Modo offline / fallback sem câmera
+  - Quando câmera é negada, mostrar QR code ou link direto
+  - Persistir último track acessado no localStorage
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ROTA: /musica  (Player de áudio com waveform animado)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[CRÍTICO] roundRect() sem fallback para navegadores antigos
+  - Linha 82: c.roundRect() é API recente (ES2021)
+  - Adicionar polyfill ou fallback manual com arc()
+
+[AVISO] AudioContext pode acumular instâncias (memory leak potencial)
+  - Se setupAnalyser() for chamado múltiplas vezes, contextos se acumulam
+  - Garantir fechamento do contexto anterior antes de criar novo
+
+[AVISO] togglePlay declarada async sem necessidade
+  - Linha 104: async function togglePlay() — remover async desnecessário
+
+[FEATURE] Suporte a múltiplos tracks
+  - TRACKS só tem "patricia" — expandir para receber novos clientes
+  - Carregar info do track dinamicamente via API ou arquivo JSON
+
+[FEATURE] Seek na barra de progresso com drag
+  - Atualmente apenas click — implementar drag/scrub suave
+
+[FEATURE] Compartilhar faixa (Web Share API)
+  - Botão para compartilhar o link da música via WhatsApp / Instagram
+
+[FEATURE] Persistir posição de reprodução (localStorage)
+  - Ao fechar e reabrir, continuar de onde parou
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ROTA: /gerador  (Gerador de waveform SVG/PNG configurável)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[CRÍTICO] AudioContext nunca fechado após decode (memory leak)
+  - Linha 295: const audioCtx = new AudioContext()
+  - Adicionar audioCtx.close() após decodeAudioData terminar
+
+[CRÍTICO] getMindARCompiler() usa busca genérica por "mind"
+  - Linha 152: pode retornar namespace errado se houver outra lib
+  - Fixar namespaces explícitos; remover busca genérica ou tornar mais restrita
+
+[CRÍTICO] Lógica de reExtract inconsistente com redraw
+  - Linhas 509-516: set() é chamado mas redraw() pode receber estado desatualizado
+  - Unificar update() e reExtract() em uma única função confiável
+
+[AVISO] Cor de fallback #1a1a1a hardcoded no preview do chaveiro
+  - Linha 236: deve usar variável CSS ou token do tema
+
+[FEATURE] Preview ao vivo do chaveiro com AR overlay
+  - Mostrar simulação de como ficará na câmera do celular
+
+[FEATURE] Exportar waveform diretamente para formato de impressão 3D
+  - STL ou G-code simplificado para uso em slicer
+
+[FEATURE] Pré-visualização de múltiplos estilos simultaneamente
+  - Grid com miniatura de cada estilo (bars, top, mirror, line)
+
+[FEATURE] Histórico de waveforms geradas (localStorage)
+  - Salvar últimas N waveforms geradas para reuso
+
+[FEATURE] Upload em lote (múltiplos clientes de uma vez)
+  - Gerar múltiplas waveforms e baixar como ZIP
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  GLOBAL — Correções de Infraestrutura e Config
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[CRÍTICO] Dependência @lovable.dev/vite-tanstack-config não listada em package.json
+  - vite.config.ts importa mas package.json não declara → build quebra
+
+[CRÍTICO] Versões TanStack desalinhadas
+  - react-router@1.168.x vs react-start/router-plugin@1.167.x
+  - Sincronizar todas as versões @tanstack/*
+
+[CRÍTICO] use-mobile.tsx acessa window sem guard de SSR
+  - Causa crash "window is not defined" com SSR ativo
+  - Adicionar verificação typeof window !== "undefined"
+
+[CRÍTICO] lang="en" no HTML — site é em português
+  - __root.tsx linha 95: mudar para lang="pt-BR" (SEO + acessibilidade)
+
+[CRÍTICO] defaultPreloadStaleTime: 0 em router.tsx
+  - Força refetch constante — definir valor adequado (ex: 30000)
+
+[CRÍTICO] Validação em isCatastrophicSsrErrorBody() muito restritiva
+  - server.ts linha 41: rejeita qualquer payload com chave extra
+  - Corrigir para verificar apenas chaves obrigatórias
+
+[AVISO] verbatimModuleSyntax: false no tsconfig.json
+  - Mudar para true para TypeScript 5.x moderno
+
+[AVISO] ecmaVersion: 2020 no eslint.config.js — usar 2022+
+
+[AVISO] eslint-plugin-prettier integrado ao ESLint (anti-padrão)
+  - Separar Prettier e ESLint como ferramentas independentes
+
+[AVISO] .prettierrc sem "endOfLine" — problema em Windows com CRLF/LF
+
+[AVISO] Fonte Inter referenciada mas sem @import ou <link> visível
+  - styles.css linha 8: verificar carregamento da fonte
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FEATURES NOVAS — Roadmap
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ ] Painel admin para cadastro de clientes e tracks
+    - Cada cliente tem: nome, artista, arquivo .ogg, waveform gerada, track ID
+    - Gerar automaticamente o .mind ao salvar
+
+[ ] QR Code como fallback do AR
+    - Se MindAR não funcionar, QR code abre /musica?track=xxx direto
+
+[ ] Página de erro customizada mais amigável (error-page.ts)
+    - Design consistente com o resto do site
+    - Botão de recarregar sem depender de onclick inline
+
+[ ] Testes unitários para utils críticos
+    - use-mobile.tsx, error-capture.ts, utils.ts
+    - Vitest ou Jest
+
+[ ] PWA / installable app
+    - manifest.json e service worker para instalação no celular
+
+[ ] Animação de loading global (suspense boundary)
+    - Skeleton screen nas páginas enquanto áudio carrega
+
+================================================================================
+  PRIORIDADE SUGERIDA
+================================================================================
+
+  Alta (bloqueia funcionalidade ou produção):
+    1. Corrigir /escanear — retry de scripts e redirect dinâmico
+    2. @lovable.dev dep faltando no package.json
+    3. use-mobile SSR crash
+    4. AudioContext memory leak no /gerador
+    5. roundRect fallback no /musica
+
+  Média (experiência degradada mas funciona):
+    6. Versões TanStack alinhadas
+    7. lang pt-BR, staleTime, validação server.ts
+    8. getMindARCompiler mais seguro
+    9. tsconfig e eslint cleanup
+
+  Baixa (melhorias futuras):
+    10. Features novas (admin, QR, PWA, testes)
+
+================================================================================

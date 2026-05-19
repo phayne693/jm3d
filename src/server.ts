@@ -38,8 +38,7 @@ function isCatastrophicSsrErrorBody(body: string, responseStatus: number): boole
   }
 
   const fields = payload as Record<string, unknown>;
-  const expectedKeys = new Set(["message", "status", "unhandled"]);
-  if (!Object.keys(fields).every((key) => expectedKeys.has(key))) {
+  if (!["message", "status", "unhandled"].some(k => k in fields)) {
     return false;
   }
 
