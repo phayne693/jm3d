@@ -57,7 +57,7 @@ export default function EscanearPage() {
     if (scriptLoaded.current) return;
     scriptLoaded.current = true;
 
-    // Injeta CSS para esconder UI padrão do MindAR/A-Frame
+    // Injeta CSS para esconder UI padrão do MindAR/A-Frame e centralizar câmera
     const hideUI = document.createElement("style");
     hideUI.textContent = `
       .mindar-ui-overlay,
@@ -68,13 +68,22 @@ export default function EscanearPage() {
       .a-enter-vr,
       [class*="mindar-ui"] { display: none !important; }
 
-      /* Vídeo preenche o container sem distorção — sem position:fixed
-         para não escapar do stacking context do root */
-      a-scene video {
+      /* Reseta posicionamento que o MindAR injeta via JS (top/left/transform calculados
+         pelo viewport — quebra em mobile quando há safe-areas ou barra do browser) */
+      a-scene video,
+      a-scene canvas,
+      a-scene .a-canvas {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
         width: 100% !important;
         height: 100% !important;
+        transform: none !important;
+        margin: 0 !important;
         object-fit: cover !important;
-        object-position: center !important;
+        object-position: center center !important;
       }
     `;
     document.head.appendChild(hideUI);
@@ -98,6 +107,25 @@ export default function EscanearPage() {
     function initScene() {
       const container = containerRef.current;
       if (!container) return;
+
+      // MutationObserver: remove transforms/offsets que o MindAR injeta via inline style
+      const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.type !== "attributes" || m.attributeName !== "style") continue;
+          const el = m.target as HTMLElement;
+          const tag = el.tagName.toLowerCase();
+          if (tag === "video" || tag === "canvas") {
+            el.style.removeProperty("transform");
+            el.style.removeProperty("top");
+            el.style.removeProperty("left");
+            el.style.removeProperty("margin");
+            el.style.setProperty("width",  "100%", "important");
+            el.style.setProperty("height", "100%", "important");
+            el.style.setProperty("position", "absolute", "important");
+          }
+        }
+      });
+      observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["style"] });
 
       const scene = document.createElement("a-scene") as AFrameElement;
       scene.setAttribute(
@@ -159,6 +187,24 @@ export default function EscanearPage() {
         .a-orientation-modal,
         .a-enter-vr,
         [class*="mindar-ui"] { display: none !important; }
+
+        /* Garante que o vídeo e canvas do MindAR sempre preencham o container
+           sem transforms de viewport que causam descentralização no mobile */
+        a-scene video,
+        a-scene canvas,
+        a-scene .a-canvas {
+          position: absolute !important;
+          top: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          bottom: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          transform: none !important;
+          margin: 0 !important;
+          object-fit: cover !important;
+          object-position: center center !important;
+        }
 
         @keyframes scan-line {
           0%   { top: 8%; }
