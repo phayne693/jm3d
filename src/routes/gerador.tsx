@@ -163,53 +163,57 @@ function StylePreviewCanvas({
   );
 }
 
-// ─── Mind AR compiler ─────────────────────────────────────────────────────────
-// Aguarda até 3s pelo namespace do MindAR no window (o bundle pode demorar um tick)
+// ─── Mind AR compiler ────────────────────────────────────────────────────────
+// Usa mind-ar@1.1.5 mindar-image.prod.js — bundle UMD puro sem A-Frame nem ES modules
+// Expõe window.MINDAR.Image.Compiler após carregamento
+
 async function getMindARCompiler(): Promise<new () => any> {
   const w = window as any;
-  for (let i = 0; i < 30; i++) {
-    if (w.MINDAR?.Image?.Compiler)  return w.MINDAR.Image.Compiler;
-    if (w.MindAR?.Image?.Compiler)  return w.MindAR.Image.Compiler;
-    if (w.mindar?.image?.Compiler)  return w.mindar.image.Compiler;
-    if (w.MindARImage?.Compiler)    return w.MindARImage.Compiler;
+  // Tenta até 6s (60 × 100ms)
+  for (let i = 0; i < 60; i++) {
+    if (w.MINDAR?.IMAGE?.Compiler) return w.MINDAR.IMAGE.Compiler;
+    if (w.MINDAR?.Image?.Compiler) return w.MINDAR.Image.Compiler;
     await new Promise(r => setTimeout(r, 100));
   }
   throw new Error(
-    "Compilador Mind AR não encontrado. Recarregue a página e tente novamente."
+    "Compilador Mind AR não encontrado após carregamento. Recarregue a página e tente novamente."
   );
 }
 
-// Promise singleton — evita carregar o bundle 2x em chamadas simultâneas
+// Singleton — carrega o bundle apenas uma vez por sessão
 let mindARLoadPromise: Promise<void> | null = null;
 
 async function compileMind(
   imageDataUrl: string,
   onProgress: (msg: string) => void
 ): Promise<Blob> {
-  // Carrega o compilador do Mind AR (só na primeira vez — Promise singleton garante thread-safety)
   if (!mindARLoadPromise) {
     onProgress("Carregando compilador Mind AR…");
     mindARLoadPromise = new Promise<void>((res, rej) => {
       const s = document.createElement("script");
-      // Bundle standalone que expõe o compilador sem depender do A-Frame
-      s.src = "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js";
+      // v1.1.5 mindar-image (sem aframe) — bundle UMD que expõe window.MINDAR
+      s.src = "https://cdn.jsdelivr.net/npm/mind-ar@1.1.5/dist/mindar-image.prod.js";
       s.onload = () => res();
       s.onerror = () => {
-        mindARLoadPromise = null; // permite retry em próxima chamada
-        rej(new Error("Falha ao carregar compilador Mind AR"));
+        mindARLoadPromise = null; // permite retry
+        rej(new Error("Falha ao carregar Mind AR. Verifique sua conexão e tente novamente."));
       };
       document.head.appendChild(s);
     });
   }
   await mindARLoadPromise;
+  // DEBUG TEMPORÁRIO — remover após identificar o namespace
+  console.log("window keys com 'mind':", Object.keys(window).filter(k => k.toLowerCase().includes("mind")));
+  console.log("window keys com 'ar':", Object.keys(window).filter(k => k.toLowerCase().includes("ar")));
+  console.log("window.MINDAR:", (window as any).MINDAR);
+  console.log("window.MindAR:", (window as any).MindAR);
 
-  onProgress("Compilando target de imagem…");
+  onProgress("Preparando imagem…");
 
-  // Converte dataURL → canvas
   const img = await new Promise<HTMLImageElement>((res, rej) => {
     const i = new Image();
     i.onload = () => res(i);
-    i.onerror = rej;
+    i.onerror = () => rej(new Error("Falha ao processar imagem da waveform."));
     i.src = imageDataUrl;
   });
 
@@ -218,10 +222,10 @@ async function compileMind(
   tmp.height = img.height;
   tmp.getContext("2d")!.drawImage(img, 0, 0);
 
-  // Aguarda namespace do compilador (async — pode demorar ticks após script load)
   const Compiler = await getMindARCompiler();
   const compiler = new Compiler();
 
+  onProgress("Compilando… 0%");
   await compiler.compileImageTargets([tmp], (p: number) => {
     onProgress(`Compilando… ${Math.round(p * 100)}%`);
   });
@@ -258,26 +262,28 @@ function GeradorPage() {
   const previewRef = useRef<HTMLCanvasElement>(null);
   const chaveiroRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Guarda o áudio bruto para re-extração quando bars/minH mudam
   const rawAudioRef = useRef<Float32Array | null>(null);
 
   const set = (partial: Partial<Settings>) =>
     setS(prev => ({ ...prev, ...partial }));
 
-  const redraw = useCallback(
-    (data: number[], settings: Settings) => {
-      if (previewRef.current) {
-        const W = previewRef.current.offsetWidth * devicePixelRatio || 800;
-        drawWaveOnCanvas(previewRef.current, data, settings, W, 200);
-      }
-      if (chaveiroRef.current) {
-        const CW = 520, CH = 160;
-        chaveiroRef.current.width = CW;
-        chaveiroRef.current.height = CH;
-        const ctx = chaveiroRef.current.getContext("2d")!;
+  const redraw = useCallback((data: number[], settings: Settings) => {
+    if (previewRef.current) {
+      const W = previewRef.current.offsetWidth * devicePixelRatio || 800;
+      drawWaveOnCanvas(previewRef.current, data, settings, W, 200);
+    }
 
-        const pad = 10, rx = 14;
-        ctx.fillStyle = settings.bgColor === "transparent" ? "#1a1a1a" : settings.bgColor;
+    if (chaveiroRef.current) {
+      const CW = 520, CH = 160;
+      chaveiroRef.current.width = CW;
+      chaveiroRef.current.height = CH;
+      const ctx = chaveiroRef.current.getContext("2d")!;
+      ctx.save();
+
+      const pad = 10, rx = 14;
+
+      // build chaveiro rounded-rect path
+      const buildPath = () => {
         ctx.beginPath();
         ctx.moveTo(pad + rx, pad);
         ctx.lineTo(CW - pad - rx, pad);
@@ -289,31 +295,43 @@ function GeradorPage() {
         ctx.lineTo(pad, pad + rx);
         ctx.quadraticCurveTo(pad, pad, pad + rx, pad);
         ctx.closePath();
-        ctx.fill();
+      };
 
-        ctx.beginPath();
-        ctx.arc(pad + 22, CH / 2, 8, 0, Math.PI * 2);
-        ctx.fillStyle = "#060606";
-        ctx.fill();
-        ctx.strokeStyle = "#333";
-        ctx.lineWidth = 1;
-        ctx.stroke();
+      // fill body
+      ctx.fillStyle = settings.bgColor === "transparent" ? "#1a1a1a" : settings.bgColor;
+      buildPath();
+      ctx.fill();
 
-        if (data.length) {
-          const tmp = document.createElement("canvas");
-          const leftX = pad + 42;
-          const rightMargin = pad + 20;
-          const wW = CW - leftX - rightMargin;
-          const wH = CH - pad * 2 - 16;
-          drawWaveOnCanvas(tmp, data, settings, wW, wH, "transparent");
-          ctx.drawImage(tmp, leftX, pad + 8);
-        }
+      // clip so wave never overflows edges
+      buildPath();
+      ctx.clip();
+
+      if (data.length) {
+        const holeEndX = pad + 42;
+        const wavePad = 10;
+        const leftX = holeEndX + wavePad;
+        const rightX = CW - pad - wavePad;
+        const wW = rightX - leftX;
+        const wH = CH - pad * 2 - 10;
+        const tmp = document.createElement("canvas");
+        drawWaveOnCanvas(tmp, data, settings, wW, wH, "transparent");
+        ctx.drawImage(tmp, leftX, pad + 5);
       }
-      // reset mind status quando waveform muda
-      setMindStatus("idle");
-    },
-    []
-  );
+
+      ctx.restore();
+
+      // hole drawn after restore so clip doesn't affect it
+      ctx.beginPath();
+      ctx.arc(pad + 22, CH / 2, 8, 0, Math.PI * 2);
+      ctx.fillStyle = "#060606";
+      ctx.fill();
+      ctx.strokeStyle = "#444";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    setMindStatus("idle");
+  }, []);
 
   const update = (partial: Partial<Settings>) => {
     const next = { ...s, ...partial };
@@ -321,7 +339,6 @@ function GeradorPage() {
     redraw(waveData, next);
   };
 
-  // reExtract: re-processa o áudio bruto com os novos parâmetros (bars / minH)
   const reExtract = (partial: Partial<Settings>) => {
     const next = { ...s, ...partial };
     set(partial);
@@ -424,7 +441,6 @@ function GeradorPage() {
     setMindProgress(0);
 
     try {
-      // Renderiza a waveform em alta resolução para o compilador
       const exportCanvas = document.createElement("canvas");
       drawWaveOnCanvas(exportCanvas, waveData, s, 1200, 300);
       const dataUrl = exportCanvas.toDataURL("image/png");
@@ -433,7 +449,6 @@ function GeradorPage() {
 
       const blob = await compileMind(dataUrl, (msg) => {
         setMindMsg(msg);
-        // Extrai % da mensagem se houver
         const match = msg.match(/(\d+)%/);
         if (match) setMindProgress(Number(match[1]));
       });
@@ -546,7 +561,7 @@ function GeradorPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <Slider label="Barras" value={s.bars} min={30} max={200}
-              onChange={v => { set({ bars: v }); reExtract({ bars: v }); }} />
+              onChange={v => reExtract({ bars: v })} />
             <Slider label="Arredondamento" value={s.radius} min={0} max={10}
               onChange={v => update({ radius: v })} />
             <Slider label="Espaçamento" value={s.gap} min={10} max={70} unit="%"
@@ -626,7 +641,7 @@ function GeradorPage() {
           </div>
         </div>
 
-        {/* comparacao de estilos */}
+        {/* comparação de estilos */}
         {waveData.length > 0 && (
           <div className="glass rounded-2xl p-6 flex flex-col gap-4">
             <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
@@ -643,11 +658,7 @@ function GeradorPage() {
                       : "border-border hover:border-primary/40"
                   }`}
                 >
-                  <StylePreviewCanvas
-                    waveData={waveData}
-                    settings={s}
-                    style={styleOpt}
-                  />
+                  <StylePreviewCanvas waveData={waveData} settings={s} style={styleOpt} />
                   <span className="text-xs text-center text-muted-foreground capitalize">{styleOpt}</span>
                 </button>
               ))}
@@ -666,26 +677,29 @@ function GeradorPage() {
         {/* ── Painel Mind AR ─────────────────────────────────────────────────── */}
         {waveData.length > 0 && (
           <div className="glass rounded-2xl p-6 flex flex-col gap-4 border border-primary/10">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-2">
-                  <ScanLine className="h-4 w-4 text-primary" />
-                  Target AR — Reconhecimento por Câmera
-                </h2>
-                <p className="mt-1.5 text-xs text-muted-foreground max-w-md">
-                  Gera o arquivo <span className="text-foreground font-mono">.mind</span> que permite o celular reconhecer a waveform impressa e abrir o player automaticamente. Coloque o arquivo em{" "}
-                  <span className="text-primary font-mono">public/targets/waveform.mind</span> após baixar.
-                </p>
-              </div>
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-2">
+                <ScanLine className="h-4 w-4 text-primary" />
+                Target AR — Reconhecimento por Câmera
+              </h2>
+              <p className="mt-1.5 text-xs text-muted-foreground max-w-md">
+                Gera o arquivo <span className="text-foreground font-mono">.mind</span> que permite
+                o celular reconhecer a waveform impressa e abrir o player automaticamente.
+                Coloque o arquivo em{" "}
+                <span className="text-primary font-mono">public/targets/waveform.mind</span> após baixar.
+              </p>
             </div>
 
-            {/* Barra de progresso */}
+            {/* barra de progresso */}
             {isCompiling && (
               <div className="flex flex-col gap-2">
                 <div className="w-full h-1 rounded-full bg-border overflow-hidden">
                   <div
                     className="h-full bg-primary transition-all duration-300"
-                    style={{ width: mindProgress ? `${mindProgress}%` : "30%", animation: mindProgress ? "none" : "indeterminate 1.5s ease-in-out infinite" }}
+                    style={{
+                      width: mindProgress ? `${mindProgress}%` : "30%",
+                      animation: mindProgress ? "none" : "indeterminate 1.5s ease-in-out infinite",
+                    }}
                   />
                 </div>
                 <p className="text-xs font-mono text-muted-foreground">{mindMsg}</p>
@@ -699,25 +713,23 @@ function GeradorPage() {
               </div>
             )}
 
-            {/* Mensagem de sucesso */}
             {mindStatus === "done" && (
               <div className="flex items-start gap-3 rounded-xl bg-primary/5 border border-primary/20 px-4 py-3">
                 <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                 <div className="text-xs text-muted-foreground">
                   <span className="text-foreground font-medium">waveform.mind baixado!</span>
-                  {" "}Coloque em <span className="text-primary font-mono">public/targets/</span> e rode o <span className="text-primary font-mono">deploy.ps1</span>.
+                  {" "}Coloque em <span className="text-primary font-mono">public/targets/</span> e rode o{" "}
+                  <span className="text-primary font-mono">deploy.ps1</span>.
                 </div>
               </div>
             )}
 
-            {/* Mensagem de erro */}
             {mindStatus === "error" && (
               <div className="rounded-xl bg-red-500/5 border border-red-500/20 px-4 py-3 text-xs text-red-400">
                 {mindMsg}
               </div>
             )}
 
-            {/* Botão */}
             <button
               onClick={generateMind}
               disabled={isCompiling || !waveData.length}
