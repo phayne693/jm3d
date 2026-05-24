@@ -2,9 +2,19 @@
 Write-Host "🔨 Building..." -ForegroundColor Cyan
 npm run build
 
-Write-Host "⚙️ Adding nodejs_compat flag..." -ForegroundColor Cyan
+Write-Host "⚙️ Configurando wrangler.json..." -ForegroundColor Cyan
 $w = Get-Content "dist/client/wrangler.json" | ConvertFrom-Json
+
+# nodejs_compat
 $w.compatibility_flags = @("nodejs_compat")
+
+# R2 — bucket de áudios dos clientes
+$r2Binding = [PSCustomObject]@{
+    bucket_name = "jm3d-audios"
+    binding     = "jm3d_audios"
+}
+$w.r2_buckets = @($r2Binding)
+
 $w | ConvertTo-Json -Depth 10 | Set-Content "dist/client/wrangler.json"
 
 Write-Host "🚀 Deploying to Cloudflare..." -ForegroundColor Cyan
