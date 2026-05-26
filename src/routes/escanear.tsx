@@ -3,32 +3,29 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Camera, Music2, MessageCircle, ScanLine } from "lucide-react";
 import logo from "@/assets/jm3d-logo.svg";
 
-export const Route = createFileRoute("/escanear")({
-  component: EscanearPage,
-});
+export const Route = createFileRoute("/escanear")({ component: EscanearPage });
 
 type Status = "idle" | "requesting-camera" | "scanning" | "found" | "error";
-
-// ─── Tipos ────────────────────────────────────────────────────────────────────
 interface TrackData { trackId: string; trackNome: string; amps: number[]; }
 
-// ─── Acumulação ───────────────────────────────────────────────────────────────
-const NUM_BARS       = 25;
-const CONF_THRESHOLD = 0.45;
-const MIN_BARS       = 20;
-const ALPHA          = 0.85;
-const MIN_AMP        = 0.12;
+// ─── Constantes ───────────────────────────────────────────────────────────────
+const NUM_BARS       = 18;
+const MIN_BARS       = 10;
+const CONF_THRESHOLD = 0.35;
+const ALPHA          = 0.80;
+const MIN_AMP        = 0.25;
 const MAX_AMP        = 1.0;
+const LEVEL_VALUES   = [0.25, 0.50, 0.75, 1.0];
 
+// ─── Acumulação ───────────────────────────────────────────────────────────────
 interface Accum { amps: number[]; conf: number[]; count: number[]; }
-
 function makeAccum(): Accum {
   return { amps: new Array(NUM_BARS).fill(0), conf: new Array(NUM_BARS).fill(0), count: new Array(NUM_BARS).fill(0) };
 }
 function accumulate(acc: Accum, amps: number[], conf: number[]): void {
   for (let i=0; i<NUM_BARS; i++) {
     const a=amps[i], c=conf[i];
-    if (!isFinite(a)||c<0.25) continue;
+    if (!isFinite(a)||c<0.20) continue;
     if (acc.count[i]===0) { acc.amps[i]=a; acc.conf[i]=c; }
     else {
       const tw=acc.conf[i]+c*ALPHA;
@@ -41,112 +38,170 @@ function accumulate(acc: Accum, amps: number[], conf: number[]): void {
 function readyCount(acc: Accum): number { return acc.conf.filter(c=>c>=CONF_THRESHOLD).length; }
 function getAmps(acc: Accum): number[] { return acc.amps.map((a,i)=>acc.conf[i]>=CONF_THRESHOLD?a:MIN_AMP); }
 
-// ─── Match direto por amplitudes do R2 ───────────────────────────────────────
-function matchDirect(measured: number[], tracks: TrackData[]): {trackId:string;trackNome:string;score:number}|null {
-  if (!measured.length||!tracks.length) return null;
-  const mMin=Math.min(...measured), mMax=Math.max(...measured), mRange=mMax-mMin||1;
-  const results=tracks.map(t=>{
-    const e=t.amps;
-    const eMin=Math.min(...e), eMax=Math.max(...e), eRange=eMax-eMin||1;
-    let score=0;
-    for (let i=0;i<NUM_BARS;i++) {
-      const mN=(measured[i]-mMin)/mRange;
-      const eN=(e[i]-eMin)/eRange;
-      score+=Math.max(0,1-Math.abs(mN-eN)*2.4);
+// ─── Quantização ──────────────────────────────────────────────────────────────
+function quantizeLevel(amp: number): number {
+  return LEVEL_VALUES.reduce((b,lv)=>Math.abs(lv-amp)<Math.abs(b-amp)?lv:b);
+}
+
+// ─── Viterbi Decoder ──────────────────────────────────────────────────────────
+const VG1=0b10011, VG2=0b11101;
+function vbBits(n:number):number{let c=0;while(n){c+=n&1;n>>=1;}return c;}
+function vbGray(n:number):number{return n^(n>>1);}
+function ampToBits(amp:number):[number,number]{
+  const idx=LEVEL_VALUES.indexOf(quantizeLevel(amp));
+  const gray=vbGray(idx)%4;
+  return [(gray>>1)&1, gray&1];
+}
+function viterbi(amps:number[]):{errors:number;bits:number[]}{
+  const data=amps.slice(1,-1);
+  const obs:number[]=[];
+  for(const a of data){const[b1,b0]=ampToBits(a);obs.push(b1,b0);}
+  const INF=1e9;
+  let dp=new Map<number,{cost:number;path:number[]}>();
+  dp.set(0,{cost:0,path:[]});
+  const steps=Math.floor(obs.length/2);
+  for(let t=0;t<steps;t++){
+    const nd=new Map<number,{cost:number;path:number[]}>();
+    for(const[st,{cost,path}] of dp){
+      for(const ib of [0,1]){
+        const ns=((st<<1)|ib)&0b11111;
+        const o1=vbBits(ns&VG1)%2, o2=vbBits(ns&VG2)%2;
+        const e=(t*2<obs.length&&o1!==obs[t*2]?1:0)+(t*2+1<obs.length&&o2!==obs[t*2+1]?1:0);
+        const nc=cost+e; const ex=nd.get(ns);
+        if(!ex||nc<ex.cost) nd.set(ns,{cost:nc,path:[...path,ib]});
+      }
     }
-    return {trackId:t.trackId, trackNome:t.trackNome, score:score/NUM_BARS};
+    dp=nd;
+  }
+  let best={cost:INF,path:[] as number[]};
+  for(const v of dp.values()) if(v.cost<best.cost) best=v;
+  return {errors:best.cost,bits:best.path};
+}
+
+// ─── Match por índices + Viterbi ──────────────────────────────────────────────
+function matchDirect(measured:number[], tracks:TrackData[]):{trackId:string;trackNome:string;score:number}|null{
+  if(!measured.length||!tracks.length) return null;
+  const measuredIdx=measured.map(a=>LEVEL_VALUES.indexOf(quantizeLevel(a)));
+  const {bits:mBits}=viterbi(measured);
+
+  const results=tracks.map(t=>{
+    const isIdx=t.amps.every((v:number)=>v>=0&&v<=3&&Number.isInteger(v));
+    const tIdx:number[]=isIdx?t.amps:t.amps.map((a:number)=>LEVEL_VALUES.indexOf(quantizeLevel(a)));
+    const tAmps:number[]=tIdx.map((i:number)=>LEVEL_VALUES[i]??MIN_AMP);
+    const {bits:tBits}=viterbi(tAmps);
+    const nb=Math.min(mBits.length,tBits.length);
+    let bm=0; for(let i=0;i<nb;i++) if(mBits[i]===tBits[i]) bm++;
+    let im=0;
+    for(let i=0;i<Math.min(measuredIdx.length,tIdx.length);i++)
+      if(measuredIdx[i]===tIdx[i]) im++;
+    return {trackId:t.trackId,trackNome:t.trackNome,score:im/NUM_BARS,exactMatches:im};
   }).sort((a,b)=>b.score-a.score);
-  const best=results[0], second=results[1];
+
+  const best=results[0] as any, second=results[1];
   const margin=best.score-(second?.score??0);
-  if (tracks.length===1) return best.score>=0.50?best:null;
-  if (best.score>=0.55&&margin>=0.20) return best;
+  if(tracks.length===1) return best.exactMatches>=10?best:null;
+  if(best.exactMatches>=11&&margin>=0.11) return best;
   return null;
 }
 
-// ─── Detector ────────────────────────────────────────────────────────────────
-function detectBars(imageData: ImageData, W: number, H: number): {amps:number[];conf:number[];waveStart:number;waveEnd:number}|null {
+// ─── Detector de barras ───────────────────────────────────────────────────────
+function detectBars(imageData:ImageData, W:number, H:number):{amps:number[];conf:number[];waveStart:number;waveEnd:number}|null{
   const {data}=imageData;
   const gray=new Float32Array(W*H);
   const rg=new Float32Array(W*H);
   const sat=new Float32Array(W*H);
-  for (let i=0;i<W*H;i++) {
+  for(let i=0;i<W*H;i++){
     const p=i*4,r=data[p],g=data[p+1],b=data[p+2];
-    gray[i]=r*0.299+g*0.587+b*0.114;
-    rg[i]=r-g;
+    gray[i]=r*0.299+g*0.587+b*0.114; rg[i]=r-g;
     const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
     sat[i]=mx>0?(mx-mn)/mx:0;
   }
-  const scanTop=Math.floor(H*0.15), scanBot=Math.floor(H*0.85), scanH=scanBot-scanTop;
-  let sG=0,sRG=0,sSat=0,sG2=0,sRG2=0,sSat2=0,n=0;
-  for (let y=scanTop;y<scanBot;y+=4) for (let x=0;x<W;x+=4) {
+  const scanTop=Math.floor(H*0.08), scanBot=Math.floor(H*0.92), scanH=scanBot-scanTop;
+  let minG=255,maxG=0,sG=0,sRG=0,sSat=0,sG2=0,sRG2=0,sSat2=0,n=0;
+  for(let y=scanTop;y<scanBot;y+=4) for(let x=0;x<W;x+=4){
     const i=y*W+x;
-    sG+=gray[i];sG2+=gray[i]**2;
-    sRG+=rg[i];sRG2+=rg[i]**2;
-    sSat+=sat[i];sSat2+=sat[i]**2;
-    n++;
+    if(gray[i]<minG)minG=gray[i]; if(gray[i]>maxG)maxG=gray[i];
+    sG+=gray[i];sG2+=gray[i]**2;sRG+=rg[i];sRG2+=rg[i]**2;sSat+=sat[i];sSat2+=sat[i]**2;n++;
   }
+  if(maxG-minG<25) return null;
   const stdG=Math.sqrt(Math.max(0,sG2/n-(sG/n)**2));
   const stdRG=Math.sqrt(Math.max(0,sRG2/n-(sRG/n)**2));
   const stdSat=Math.sqrt(Math.max(0,sSat2/n-(sSat/n)**2))*255;
-  const work=new Float32Array(W*H);
-  let workThresh: number;
-  if (stdRG>=stdG&&stdRG>=stdSat) {
-    for (let i=0;i<W*H;i++) work[i]=Math.max(0,128-rg[i]);
-    workThresh=30;
-  } else if (stdSat>=stdG) {
-    for (let i=0;i<W*H;i++) work[i]=(1-sat[i])*255;
-    workThresh=120;
+  const work=new Float32Array(W*H); let workThresh:number;
+  if(stdRG>=stdG&&stdRG>=stdSat){
+    for(let i=0;i<W*H;i++) work[i]=Math.max(0,128-rg[i]); workThresh=30;
+  } else if(stdSat>=stdG){
+    for(let i=0;i<W*H;i++) work[i]=(1-sat[i])*255; workThresh=120;
   } else {
-    const avgG=sG/n; const bright=avgG<128;
-    const thresh=avgG+(bright?18:-18);
-    for (let i=0;i<W*H;i++) {
-      work[i]=bright?Math.min(255,Math.max(0,(gray[i]-thresh)*3)):Math.min(255,Math.max(0,(thresh-gray[i])*3));
-    }
+    const midThreshold=minG+(maxG-minG)*0.30;
+    const bright=sG/n<128;
+    for(let i=0;i<W*H;i++)
+      work[i]=bright?Math.min(255,Math.max(0,(gray[i]-midThreshold)*3)):Math.min(255,Math.max(0,(midThreshold-gray[i])*3));
     workThresh=40;
   }
   const colH=new Float32Array(W);
-  for (let x=0;x<W;x++) {
-    let sum=0;
-    for (let y=scanTop;y<scanBot;y++) if (work[y*W+x]>workThresh) sum++;
-    colH[x]=sum;
+  for(let x=0;x<W;x++){
+    let run=0,mr=0;
+    for(let y=scanTop;y<scanBot;y++){if(work[y*W+x]>workThresh){run++;if(run>mr)mr=run;}else run=0;}
+    colH[x]=mr;
   }
-  const kSize=Math.max(1,Math.floor(W/80));
+  const kSize=Math.max(2,Math.floor(W/120));
   const sm=new Float32Array(W);
-  for (let x=0;x<W;x++) {
+  for(let x=0;x<W;x++){
     let s=0,c=0;
-    for (let k=-kSize;k<=kSize;k++) { const xi=x+k; if(xi>=0&&xi<W){s+=colH[xi];c++;} }
+    for(let k=-kSize;k<=kSize;k++){const xi=x+k;if(xi>=0&&xi<W){const w=(kSize+1)-Math.abs(k);s+=colH[xi]*w;c+=w;}}
     sm[x]=s/c;
   }
   const maxH=Math.max(...Array.from(sm));
-  if (maxH<scanH*0.06) return null;
-  const minSig=maxH*0.08;
-  let waveStart=0, waveEnd=W-1;
-  for (let x=0;x<W;x++) { if(sm[x]>minSig){waveStart=x;break;} }
-  for (let x=W-1;x>=0;x--) { if(sm[x]>minSig){waveEnd=x;break;} }
-  const waveWidth=waveEnd-waveStart;
-  if (waveWidth<W*0.20) return null;
-  const radius=Math.max(3,Math.floor(waveWidth/(NUM_BARS*2.8)));
-  const amps: number[]=[];
-  for (let i=0;i<NUM_BARS;i++) {
-    const x=Math.floor(waveStart+(i/(NUM_BARS-1))*waveWidth);
-    let s=0,c=0;
-    for (let dx=-radius;dx<=radius;dx++) { const xi=Math.max(0,Math.min(W-1,x+dx)); s+=sm[xi];c++; }
-    amps.push(s/c);
+  if(maxH<scanH*0.05) return null;
+  const gapThresh=maxH*0.12;
+  const bs:number[]=[],be:number[]=[]; let inBar=false;
+  for(let x=0;x<W;x++){
+    const isBar=sm[x]>gapThresh;
+    if(isBar&&!inBar){bs.push(x);inBar=true;}
+    if(!isBar&&inBar){be.push(x-1);inBar=false;}
   }
-  const aMin=Math.min(...amps),aMax=Math.max(...amps),aRange=aMax-aMin;
-  if (aRange<maxH*0.04) return null;
-  const normalized=amps.map(a=>MIN_AMP+((a-aMin)/aRange)*(MAX_AMP-MIN_AMP));
-  const barConf: number[]=[];
-  for (let i=0;i<NUM_BARS;i++) {
-    const x=Math.floor(waveStart+(i/(NUM_BARS-1))*waveWidth);
-    const vals: number[]=[];
-    for (let dx=-radius;dx<=radius;dx++) vals.push(sm[Math.max(0,Math.min(W-1,x+dx))]);
-    const mean=vals.reduce((a,b)=>a+b,0)/vals.length;
-    const variance=vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length;
-    const cv=mean>0?Math.sqrt(variance)/mean:1;
-    barConf.push(Math.max(0,Math.min(1,1-cv*1.6)));
+  if(inBar) be.push(W-1);
+  const minW=W*0.003;
+  const bC:number[]=[],bH:number[]=[];
+  for(let k=0;k<Math.min(bs.length,be.length);k++){
+    const s=bs[k],e=be[k];
+    if(e-s<1||(e-s)<minW) continue;
+    let pk=0; for(let x=s;x<=e;x++) if(sm[x]>pk) pk=sm[x];
+    bC.push((s+e)/2); bH.push(pk);
   }
-  return {amps:normalized,conf:barConf,waveStart,waveEnd};
+  const minGap=W/(NUM_BARS*2.2);
+  const fC:number[]=[],fH:number[]=[];
+  for(let k=0;k<bC.length;k++){
+    if(!fC.length||bC[k]-fC[fC.length-1]>minGap){fC.push(bC[k]);fH.push(bH[k]);}
+    else if(bH[k]>fH[fH.length-1]){fC[fC.length-1]=bC[k];fH[fH.length-1]=bH[k];}
+  }
+  if(fC.length<NUM_BARS-2||fC.length>NUM_BARS+2) return null;
+  const sps:number[]=[]; for(let k=1;k<fC.length;k++) sps.push(fC[k]-fC[k-1]);
+  const meanSp=sps.reduce((a,b)=>a+b,0)/sps.length;
+  const stdSp=Math.sqrt(sps.reduce((a,b)=>a+(b-meanSp)**2,0)/sps.length);
+  if(stdSp/meanSp>0.35) return null;
+  let fHfinal=fH;
+  if(fC.length!==NUM_BARS){
+    fHfinal=[];
+    for(let k=0;k<NUM_BARS;k++){
+      const t=(k/(NUM_BARS-1))*(fH.length-1);
+      const idx=Math.floor(t),frac=t-idx;
+      fHfinal.push(fH[idx]+(fH[Math.min(idx+1,fH.length-1)]-fH[idx])*frac);
+    }
+  }
+  const normalized=fHfinal.map(h=>MIN_AMP+((h-Math.min(...fHfinal))/(Math.max(...fHfinal)-Math.min(...fHfinal)||1))*(MAX_AMP-MIN_AMP));
+  const barConf=fC.map((_,k)=>{
+    if(k===0||k===fC.length-1) return 0.8;
+    const sp=fC[k]-fC[k-1];
+    return Math.max(0,Math.min(1,1-Math.abs(sp-meanSp)/meanSp*2));
+  });
+  const barConfFinal=fHfinal===fH?barConf:fHfinal.map((_,k)=>{
+    const t=(k/(NUM_BARS-1))*(barConf.length-1);
+    const idx=Math.floor(t);
+    return barConf[idx]+(barConf[Math.min(idx+1,barConf.length-1)]-barConf[idx])*(t-idx);
+  });
+  return {amps:normalized,conf:barConfFinal,waveStart:fC[0],waveEnd:fC[NUM_BARS-1]};
 }
 
 // ─── Componente ───────────────────────────────────────────────────────────────
@@ -158,54 +213,51 @@ function EscanearPage() {
   const initialized=useRef(false);
   const readingsRef=useRef<{trackId:string;trackNome:string;score:number}[]>([]);
   const accumRef   =useRef<Accum>(makeAccum());
-  const lastRegion =useRef<{start:number;end:number}|null>(null);
+  const tracksRef  =useRef<TrackData[]>([]);
+  const failCount  =useRef(0);
 
-  const [status,     setStatus]    =useState<Status>("idle");
-  const [errorMsg,   setErrorMsg]  =useState("");
-  const [tracks,     setTracks]    =useState<TrackData[]>([]);
-  const [confidence, setConfidence]=useState(0);
-  const [detecting,  setDetecting] =useState(false);
-  const [debugLog,   setDebugLog]  =useState<string[]>([]);
-  const [showDebug,  setShowDebug] =useState(false);
+  const [status,      setStatus]     =useState<Status>("idle");
+  const [errorMsg,    setErrorMsg]   =useState("");
+  const [tracksCount, setTracksCount]=useState(0);
+  const [confidence,  setConfidence] =useState(0);
+  const [detecting,   setDetecting]  =useState(false);
+  const [debugLog,    setDebugLog]   =useState<string[]>([]);
+  const [showDebug,   setShowDebug]  =useState(false);
   const debugRef=useRef<string[]>([]);
 
-  const WHATSAPP="https://wa.me/5511940677064?text=Ol%C3%A1%20JM3D%2C%20quero%20minha%20mem%C3%B3ria%20sonora";
-
-  function addLog(msg: string) {
+  function addLog(msg:string){
     const ts=new Date().toLocaleTimeString("pt-BR",{hour12:false});
     const line=`${ts} ${msg}`;
-    debugRef.current=[line,...debugRef.current].slice(0,30);
+    debugRef.current=[line,...debugRef.current].slice(0,45);
     setDebugLog([...debugRef.current]);
   }
 
   useEffect(()=>{
     fetch("/api/amps").then(r=>r.json()).then((d:any)=>{
       const t=d.tracks??[];
-      setTracks(t);
+      tracksRef.current=t; setTracksCount(t.length);
       addLog(`📦 ${t.length} track(s): ${t.map((x:any)=>x.trackId).join(", ")||"nenhum"}`);
-    }).catch((e)=>addLog(`❌ Erro: ${e}`));
+    }).catch(e=>addLog(`❌ Erro: ${e}`));
   },[]);
 
   useEffect(()=>{ startScanner(); return ()=>cleanup(); },[]);
 
-  function cleanup() {
+  function cleanup(){
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach(t=>t.stop());
   }
 
-  async function startScanner() {
-    if (initialized.current) return;
-    initialized.current=true;
-    setStatus("requesting-camera");
-    try {
+  async function startScanner(){
+    if(initialized.current) return;
+    initialized.current=true; setStatus("requesting-camera");
+    try{
       const stream=await navigator.mediaDevices.getUserMedia({
         video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}
       });
       const vtrack=stream.getVideoTracks()[0];
       const caps=vtrack.getCapabilities?.() as any;
-      if (caps?.focusMode) {
-        try{await vtrack.applyConstraints({advanced:[{focusMode:"continuous"} as any]});}catch{}
-      }
+      if(caps?.focusMode) try{await vtrack.applyConstraints({advanced:[{focusMode:"continuous"} as any]});}catch{}
+      if(caps?.exposureMode) try{await vtrack.applyConstraints({advanced:[{exposureMode:"continuous"} as any]});}catch{}
       streamRef.current=stream;
       const video=videoRef.current!;
       video.srcObject=stream; video.playsInline=true; video.muted=true;
@@ -216,9 +268,8 @@ function EscanearPage() {
       });
       canvasRef.current!.width=video.videoWidth;
       canvasRef.current!.height=video.videoHeight;
-      setStatus("scanning");
-      loop();
-    } catch(e:any) {
+      setStatus("scanning"); loop();
+    }catch(e:any){
       setStatus("error");
       setErrorMsg(e?.name==="NotAllowedError"?"Permissão de câmera negada.":"Câmera indisponível.");
     }
@@ -226,303 +277,262 @@ function EscanearPage() {
 
   const loop=useCallback(()=>{
     const video=videoRef.current,canvas=canvasRef.current;
-    if(!video||!canvas||video.readyState<2){
-      rafRef.current=requestAnimationFrame(loop);return;
-    }
+    if(!video||!canvas||video.readyState<2){rafRef.current=requestAnimationFrame(loop);return;}
     const W=canvas.width,H=canvas.height;
     const ctx=canvas.getContext("2d",{willReadFrequently:true})!;
     ctx.drawImage(video,0,0,W,H);
-
-    const roiW=Math.floor(W*0.90);
-    const roiH=Math.floor(H*0.28);
-    const roiX=Math.floor((W-roiW)/2);
-    const roiY=Math.floor((H-roiH)/2);
+    const roiW=Math.floor(W*0.90),roiH=Math.floor(H*0.18);
+    const roiX=Math.floor((W-roiW)/2),roiY=Math.floor((H-roiH)/2);
     const imageData=ctx.getImageData(roiX,roiY,roiW,roiH);
     const detected=detectBars(imageData,roiW,roiH);
-
-    if (detected) {
+    if(detected){
       setDetecting(true);
-      const last=lastRegion.current;
-      if (!last||Math.abs(detected.waveStart-last.start)>8||Math.abs(detected.waveEnd-last.end)>8) {
-        lastRegion.current={start:detected.waveStart,end:detected.waveEnd};
-      }
       accumulate(accumRef.current,detected.amps,detected.conf);
       const ready=readyCount(accumRef.current);
-      setConfidence(Math.round((ready/NUM_BARS)*70));
-
-      if (ready>=MIN_BARS&&tracks.length>0) {
+      setConfidence(Math.round((ready/NUM_BARS)*50));
+      const currentTracks=tracksRef.current;
+      if(ready>=MIN_BARS&&currentTracks.length>0){
         const measuredAmps=getAmps(accumRef.current);
-        const scores=tracks.map(t=>{
-          const mMin=Math.min(...measuredAmps),mMax=Math.max(...measuredAmps),mRange=mMax-mMin||1;
-          const eMin=Math.min(...t.amps),eMax=Math.max(...t.amps),eRange=eMax-eMin||1;
-          let sc=0;
-          for(let i=0;i<NUM_BARS;i++){
-            sc+=Math.max(0,1-Math.abs((measuredAmps[i]-mMin)/mRange-(t.amps[i]-eMin)/eRange)*2.4);
-          }
-          return {id:t.trackId,score:sc/NUM_BARS};
-        }).sort((a,b)=>b.score-a.score);
-        addLog(`📊 ${ready}/25 | Top: ${scores[0]?.id} ${(scores[0]?.score*100).toFixed(0)}% | 2o: ${scores[1]?.id||'-'} ${((scores[1]?.score||0)*100).toFixed(0)}%`);
-
-        const match=matchDirect(measuredAmps,tracks);
-        if (match) {
+        // Debug Viterbi
+        const measuredIdx=measuredAmps.map(a=>LEVEL_VALUES.indexOf(quantizeLevel(a)));
+        const {bits:decBits,errors:decErr}=viterbi(measuredAmps);
+        const bitsStr=decBits.slice(0,10).join('')+(decBits.length>10?'…':'');
+        const vitRanking=currentTracks.map(t=>{
+          const isIdx=t.amps.every((v:number)=>v>=0&&v<=3&&Number.isInteger(v));
+          const tAmps:number[]=isIdx?t.amps.map((i:number)=>LEVEL_VALUES[i]??MIN_AMP):t.amps;
+          const {bits:tBits}=viterbi(tAmps);
+          const tIdx=isIdx?t.amps:t.amps.map((a:number)=>LEVEL_VALUES.indexOf(quantizeLevel(a)));
+          let im=0; for(let i=0;i<Math.min(measuredIdx.length,tIdx.length);i++) if(measuredIdx[i]===tIdx[i]) im++;
+          const nb=Math.min(decBits.length,tBits.length);
+          let bm=0; for(let i=0;i<nb;i++) if(decBits[i]===tBits[i]) bm++;
+          return{id:t.trackId,im,bm,nb};
+        }).sort((a,b)=>b.im-a.im);
+        const vTop=vitRanking[0];
+        addLog(`🔬 bits=${bitsStr} erros=${decErr} → ${vTop?.id||'?'} (${vTop?.im||0}/18 idx, ${vTop?.bm||0}/${vTop?.nb||0} bits)`);
+        addLog(`🔎 buscando "${vTop?.id||'?'}" no R2… ${currentTracks.find(t=>t.trackId===vTop?.id)?'✓ encontrado':'✗ não encontrado'}`);
+        const match=matchDirect(measuredAmps,currentTracks);
+        if(match){
+          failCount.current=0;
           readingsRef.current.push(match);
-          if(readingsRef.current.length>4) readingsRef.current.shift();
+          if(readingsRef.current.length>3) readingsRef.current.shift();
           const votes:Record<string,number>={};
           for(const r of readingsRef.current) votes[r.trackId]=(votes[r.trackId]??0)+1;
           const [topTrack,topCount]=Object.entries(votes).sort((a,b)=>b[1]-a[1])[0];
-          setConfidence(70+Math.round((topCount/3)*29));
-          addLog(`✓ ${topTrack} (${topCount}/3 votos)`);
-          if(topCount>=3){
-            setConfidence(100);
-            setStatus("found");
+          setConfidence(50+Math.round((topCount/2)*49));
+          addLog(`✓ ${topTrack} (${topCount}/2 votos)`);
+          if(topCount>=2){
+            setConfidence(100); setStatus("found");
             addLog(`🎵 CONFIRMADO: ${topTrack}`);
             if(navigator.vibrate) navigator.vibrate([80,40,160]);
-            setTimeout(()=>{window.location.href=`/musica?track=${topTrack}`;},400);
-            return;
+            setTimeout(()=>{window.location.href=`/musica?track=${topTrack}`;},400); return;
           }
         } else {
-          accumRef.current=makeAccum();
-          readingsRef.current=[];
-          setConfidence(0);
-          addLog(`✗ Sem match — resetando`);
+          failCount.current++;
+          if(failCount.current>=2){
+            accumRef.current=makeAccum(); readingsRef.current=[]; failCount.current=0; setConfidence(0);
+          }
         }
       }
-    } else {
-      setDetecting(false);
-      lastRegion.current=null;
-    }
+    } else { setDetecting(false); }
     rafRef.current=requestAnimationFrame(loop);
-  },[tracks]);
+  },[]);
 
   useEffect(()=>{
-    if(tracks.length>0&&status==="scanning"){
+    if(tracksCount>0&&status==="scanning"){
       cancelAnimationFrame(rafRef.current);
       rafRef.current=requestAnimationFrame(loop);
     }
-  },[tracks,loop,status]);
+  },[tracksCount,loop,status]);
 
   const retry=()=>{
-    cleanup();
-    initialized.current=false;
-    readingsRef.current=[];
-    accumRef.current=makeAccum();
-    lastRegion.current=null;
-    setStatus("idle");setErrorMsg("");setConfidence(0);setDetecting(false);
+    cleanup(); initialized.current=false;
+    readingsRef.current=[]; accumRef.current=makeAccum(); failCount.current=0;
+    setStatus("idle"); setErrorMsg(""); setConfidence(0); setDetecting(false);
     setTimeout(()=>startScanner(),300);
   };
 
-  // Progresso em 3 fases
-  const phase = confidence>=70?"confirming":confidence>0?"reading":"waiting";
+  const phase=confidence>=70?"confirming":detecting?"reading":"waiting";
 
   return (
-    <div className="dark fixed inset-0 overflow-hidden" style={{background:"#050810"}}>
+    <div className="relative min-h-screen bg-black text-white overflow-hidden flex flex-col select-none">
       <style>{`
-        @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes pulse-ring{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.15);opacity:0}}
-        @keyframes fade-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-        .fade-in{animation:fade-in .4s ease forwards}
+        @keyframes scanline{0%{top:15%}100%{top:80%}}
+        @keyframes pulse-ring{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.2);opacity:0}}
+        @keyframes fade-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .fade-up{animation:fade-up .35s ease forwards}
       `}</style>
 
-      {/* Câmera — sem overlay de linhas, só o vídeo limpo */}
-      <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover opacity-70"
-        style={{zIndex:0}} playsInline muted autoPlay/>
-      <canvas ref={canvasRef} className="hidden"/>
-
-      {/* Gradiente suave no topo e base */}
-      <div className="absolute inset-0 pointer-events-none" style={{
-        zIndex:1,
-        background:"linear-gradient(to bottom, rgba(5,8,16,0.85) 0%, transparent 30%, transparent 70%, rgba(5,8,16,0.95) 100%)"
-      }}/>
-
-      {/* Header limpo */}
-      <header className="absolute top-0 inset-x-0 z-20 px-5 py-4 flex items-center justify-between">
-        <a href="/" className="min-h-[44px] flex items-center">
-          <img src={logo} alt="JM3D" className="h-7 w-auto"/>
-        </a>
-        {tracks.length>0&&(
-          <div className="text-xs font-mono px-2.5 py-1 rounded-full"
-            style={{background:"rgba(0,198,224,0.08)",color:"rgba(0,198,224,0.6)",border:"1px solid rgba(0,198,224,0.15)"}}>
-            {tracks.length} memória{tracks.length>1?"s":""}
-          </div>
-        )}
-      </header>
-
-      {/* UI principal — centralizada e limpa */}
-      <div className="absolute inset-0 z-10 flex flex-col items-center justify-between py-28 px-6">
-
-        {/* Título */}
-        <div className="text-center">
-          {status==="found"?(
-            <div className="fade-in flex flex-col items-center gap-2">
-              <Music2 className="h-8 w-8 text-cyan-400"/>
-              <h1 className="text-xl font-semibold text-white">Memória reconhecida</h1>
-              <p className="text-sm text-cyan-400">Abrindo sua música...</p>
-            </div>
-          ):status==="requesting-camera"?(
-            <h1 className="text-lg font-medium text-white/70">Iniciando câmera...</h1>
-          ):status==="error"?(
-            <h1 className="text-lg font-medium text-red-400">Erro de câmera</h1>
-          ):(
-            <div className="flex flex-col items-center gap-1">
-              <h1 className="text-xl font-semibold text-white">
-                {phase==="confirming"?"Identificando..."
-                  :detecting?"Lendo waveform"
-                  :"Aponte para o chaveiro"}
-              </h1>
-              <p className="text-sm text-white/40">
-                {phase==="confirming"?"Aguarde um instante"
-                  :detecting?"Mantendo o foco..."
-                  :"Centralize a waveform na tela"}
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Indicador central — círculo simples e limpo */}
-        <div className="flex flex-col items-center gap-8">
-
-          {/* Círculo de progresso */}
-          <div className="relative flex items-center justify-center" style={{width:160,height:160}}>
-
-            {/* Ring de fundo */}
-            <svg className="absolute inset-0" width="160" height="160" viewBox="0 0 160 160">
-              <circle cx="80" cy="80" r="68" fill="none"
-                stroke="rgba(0,198,224,0.08)" strokeWidth="2"/>
-              {/* Arco de progresso */}
-              <circle cx="80" cy="80" r="68" fill="none"
-                stroke={confidence>=70?"#00ffaa":"rgba(0,198,224,0.7)"}
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeDasharray={`${(confidence/100)*427} 427`}
-                transform="rotate(-90 80 80)"
-                style={{transition:"stroke-dasharray 0.4s ease, stroke 0.4s ease"}}/>
-            </svg>
-
-            {/* Anel de pulse quando confirmando */}
-            {phase==="confirming"&&(
-              <div className="absolute inset-0 rounded-full border border-cyan-400/30"
-                style={{animation:"pulse-ring 1.2s ease-out infinite"}}/>
-            )}
-
-            {/* Ícone central */}
-            <div className="relative flex items-center justify-center rounded-full"
-              style={{
-                width:88, height:88,
-                background: status==="found"
-                  ?"rgba(0,255,170,0.12)"
-                  :detecting
-                    ?"rgba(0,198,224,0.08)"
-                    :"rgba(255,255,255,0.04)",
-                border: status==="found"
-                  ?"1px solid rgba(0,255,170,0.3)"
-                  :detecting
-                    ?"1px solid rgba(0,198,224,0.2)"
-                    :"1px solid rgba(255,255,255,0.08)",
-                transition:"all 0.4s ease",
-              }}>
-
-              {status==="requesting-camera"?(
-                <div className="h-7 w-7 rounded-full border-2 border-white/20 border-t-cyan-400"
-                  style={{animation:"spin 0.8s linear infinite"}}/>
-              ):status==="found"?(
-                <Music2 className="h-8 w-8 text-cyan-400"/>
-              ):detecting?(
-                <div className="flex flex-col items-center gap-0.5">
-                  {/* Mini waveform animada no centro — só 5 barras, sem movimento lateral */}
-                  <div className="flex items-center gap-1">
-                    {[0.4,0.7,1,0.6,0.8,0.5,0.9,0.7,0.4].map((h,i)=>(
-                      <div key={i} className="rounded-full"
-                        style={{
-                          width:3,
-                          height:Math.floor(h*28),
-                          background:"rgba(0,198,224,0.7)",
-                          opacity: 0.5 + h*0.5,
-                        }}/>
-                    ))}
-                  </div>
-                </div>
-              ):(
-                <Camera className="h-7 w-7 text-white/30"/>
-              )}
-            </div>
-
-            {/* Porcentagem */}
-            {confidence>0&&status==="scanning"&&(
-              <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 text-xs font-mono"
-                style={{color: confidence>=70?"#00ffaa":"rgba(0,198,224,0.7)"}}>
-                {confidence}%
-              </div>
-            )}
-          </div>
-
-          {/* Mensagem de fase */}
-          {status==="scanning"&&(
-            <div className="flex flex-col items-center gap-1 text-center">
-              {phase==="waiting"&&(
-                <p className="text-xs text-white/30">Mantenha o chaveiro à cerca de 15cm</p>
-              )}
-              {phase==="reading"&&(
-                <p className="text-xs text-cyan-400/70">
-                  {readyCount(accumRef.current)}/{NUM_BARS} barras acumuladas
-                </p>
-              )}
-              {phase==="confirming"&&(
-                <p className="text-xs text-white/50">Confirmando leitura...</p>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Botões de erro / rodapé */}
-        <div className="flex flex-col items-center gap-3 w-full max-w-xs">
-          {status==="error"&&(
-            <>
-              <p className="text-sm text-white/50 text-center">{errorMsg}</p>
-              <button onClick={retry}
-                className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-sm font-medium text-white min-h-[44px]"
-                style={{background:"rgba(0,198,224,0.12)",border:"1px solid rgba(0,198,224,0.25)"}}>
-                <Camera className="h-4 w-4"/>Tentar novamente
-              </button>
-              <a href={WHATSAPP} target="_blank" rel="noreferrer"
-                className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-sm font-semibold text-white min-h-[44px]"
-                style={{background:"rgba(0,198,224,0.85)"}}>
-                <MessageCircle className="h-4 w-4"/>Falar com a JM3D
-              </a>
-            </>
-          )}
-          {status==="found"&&(
-            <div className="flex items-center gap-2 text-sm text-cyan-400/70">
-              <ScanLine className="h-4 w-4"/>Abrindo player...
-            </div>
-          )}
-        </div>
+      {/* Câmera backdrop */}
+      <div className="absolute inset-0 z-0">
+        <video ref={videoRef}
+          className="w-full h-full object-cover opacity-50"
+          style={{filter:"blur(0.5px)"}}
+          playsInline muted autoPlay/>
+        <canvas ref={canvasRef} className="hidden"/>
+        <div className="absolute inset-0" style={{
+          background:"linear-gradient(to bottom,rgba(0,0,0,0.7) 0%,transparent 25%,transparent 70%,rgba(0,0,0,0.9) 100%)"
+        }}/>
       </div>
 
-      {/* Debug — compacto, canto inferior direito */}
-      <button onClick={()=>setShowDebug(v=>!v)}
-        className="fixed bottom-6 right-4 z-30 text-xs font-mono px-3 py-1.5 rounded-full"
-        style={{background:"rgba(0,0,0,0.6)",color:"rgba(0,198,224,0.5)",border:"1px solid rgba(0,198,224,0.15)"}}>
-        {showDebug?"✕ debug":"debug"}
-      </button>
+      {/* Conteúdo */}
+      <div className="relative z-10 flex flex-col min-h-screen p-5">
 
+        {/* Header */}
+        <header className="flex items-center justify-between mb-auto">
+          <div className="flex items-center gap-2.5">
+            <img src={logo} alt="JM3D" className="h-6 w-auto"/>
+            <div className="h-3.5 w-px bg-white/20"/>
+            <span className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-medium">Memory Scanner</span>
+          </div>
+          {tracksCount>0&&(
+            <div className="px-3 py-1 rounded-full bg-white/5 border border-white/10 backdrop-blur-md">
+              <span className="text-[10px] font-mono text-cyan-400">{tracksCount} memória{tracksCount>1?"s":""}</span>
+            </div>
+          )}
+        </header>
+
+        {/* Centro */}
+        <div className="flex flex-col items-center justify-center flex-1 gap-8 py-12">
+
+          {/* Mensagem */}
+          <div className="text-center min-h-[52px] flex flex-col items-center justify-center gap-1">
+            {status==="found"?(
+              <div className="fade-up flex flex-col items-center gap-1">
+                <Music2 className="h-6 w-6 text-green-400"/>
+                <h2 className="text-xl font-semibold text-green-400">Memória reconhecida</h2>
+                <p className="text-xs text-green-400/60">Abrindo sua música...</p>
+              </div>
+            ):status==="requesting-camera"?(
+              <h2 className="text-lg font-medium text-white/50">Iniciando câmera...</h2>
+            ):status==="error"?(
+              <h2 className="text-lg font-medium text-red-400">Erro de câmera</h2>
+            ):(
+              <>
+                <h2 className="text-xl font-semibold text-white">
+                  {phase==="confirming"?"Identificando..."
+                    :phase==="reading"?"Lendo waveform..."
+                    :"Aponte para o chaveiro"}
+                </h2>
+                <p className="text-xs text-white/40">
+                  {phase==="confirming"?"Aguarde um instante"
+                    :phase==="reading"?"Mantenha o celular fixo"
+                    :"Alinhe a waveform na tela"}
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Visor com reticle */}
+          <div className="relative w-72 h-28 rounded-2xl border border-white/10 bg-black/30 backdrop-blur-sm overflow-hidden shadow-2xl flex items-center justify-center">
+            {/* Scan line */}
+            {phase==="reading"&&(
+              <div className="absolute inset-x-4 h-px bg-cyan-400/70 shadow-[0_0_10px_#00c6e0]"
+                style={{animation:"scanline 1.2s ease-in-out infinite alternate",willChange:"top"}}/>
+            )}
+            {/* Ícone central */}
+            <div className={`w-14 h-14 rounded-full flex items-center justify-center border transition-all duration-500 ${
+              phase==="confirming"?"border-green-400 bg-green-500/15 shadow-[0_0_30px_rgba(74,222,128,0.2)]"
+              :phase==="reading"?"border-cyan-400/60 bg-cyan-500/10"
+              :"border-white/15 bg-white/5"}`}>
+              {status==="requesting-camera"?(
+                <div className="h-5 w-5 rounded-full border-2 border-white/20 border-t-cyan-400 animate-spin"/>
+              ):status==="found"?(
+                <Music2 className="h-6 w-6 text-green-400"/>
+              ):phase==="reading"?(
+                <div className="flex items-center gap-0.5">
+                  {[0.4,0.7,1,0.6,0.9,0.5,0.8].map((h,i)=>(
+                    <div key={i} className="rounded-full bg-cyan-400/80"
+                      style={{width:2.5,height:Math.floor(h*22),opacity:0.5+h*0.5}}/>
+                  ))}
+                </div>
+              ):(
+                <Camera className="h-5 w-5 text-white/25"/>
+              )}
+            </div>
+            {/* Cantos */}
+            {(["tl","tr","bl","br"] as const).map(pos=>(
+              <div key={pos} className="absolute" style={{
+                top:pos.startsWith("t")?10:"auto",
+                bottom:pos.startsWith("b")?10:"auto",
+                left:pos.endsWith("l")?10:"auto",
+                right:pos.endsWith("r")?10:"auto",
+                width:16,height:16,
+                borderTop:pos.startsWith("t")?"2px solid rgba(255,255,255,0.25)":"none",
+                borderBottom:pos.startsWith("b")?"2px solid rgba(255,255,255,0.25)":"none",
+                borderLeft:pos.endsWith("l")?"2px solid rgba(255,255,255,0.25)":"none",
+                borderRight:pos.endsWith("r")?"2px solid rgba(255,255,255,0.25)":"none",
+                borderRadius:pos==="tl"?"3px 0 0 0":pos==="tr"?"0 3px 0 0":pos==="bl"?"0 0 0 3px":"0 0 3px 0",
+              }}/>
+            ))}
+            {/* Pulse ring quando confirming */}
+            {phase==="confirming"&&(
+              <div className="absolute inset-2 rounded-xl border border-green-400/30"
+                style={{animation:"pulse-ring 1s ease-out infinite"}}/>
+            )}
+          </div>
+
+          {/* Progresso */}
+          {confidence>0&&status==="scanning"&&(
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-48 h-1 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width:`${confidence}%`,
+                    background:confidence>=70?"#4ade80":"#00c6e0"
+                  }}/>
+              </div>
+              <span className="text-xs font-mono"
+                style={{color:confidence>=70?"#4ade80":"rgba(0,198,224,0.7)"}}>
+                {confidence}%
+              </span>
+            </div>
+          )}
+
+          <p className="text-[11px] text-white/25 font-mono tracking-wide">
+            Mantenha a câmera a cerca de 15cm
+          </p>
+        </div>
+
+        {/* Erro */}
+        {status==="error"&&(
+          <div className="flex flex-col items-center gap-3 mb-8">
+            <p className="text-sm text-white/50 text-center">{errorMsg}</p>
+            <button onClick={retry}
+              className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-medium text-white"
+              style={{background:"rgba(0,198,224,0.15)",border:"1px solid rgba(0,198,224,0.3)"}}>
+              <Camera className="h-4 w-4"/>Tentar novamente
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Debug */}
+      <button onClick={()=>setShowDebug(v=>!v)}
+        className="fixed bottom-6 right-4 z-30 text-[10px] font-mono px-3 py-1.5 rounded-full"
+        style={{background:"rgba(0,0,0,0.75)",color:"rgba(0,198,224,0.6)",border:"1px solid rgba(0,198,224,0.15)"}}>
+        {showDebug?"✕ fechar":"⚙ debug"}
+      </button>
       {showDebug&&(
         <div className="fixed bottom-0 left-0 right-0 z-30 max-h-56 overflow-y-auto"
-          style={{background:"rgba(0,0,0,0.95)",borderTop:"1px solid rgba(0,198,224,0.15)"}}>
-          <div className="px-4 pt-3 pb-1 flex justify-between items-center">
-            <span className="text-xs font-mono text-cyan-400">debug</span>
-            <span className="text-xs text-white/30 font-mono">{tracks.length} tracks</span>
+          style={{background:"rgba(3,3,8,0.97)",borderTop:"1px solid rgba(0,198,224,0.15)"}}>
+          <div className="px-4 pt-3 pb-1 flex justify-between items-center border-b border-white/5">
+            <span className="text-xs font-mono font-bold text-cyan-400">Terminal JM3D</span>
+            <span className="text-[10px] text-white/30 font-mono">{tracksCount} tracks · {status}</span>
           </div>
-          <div className="px-4 pb-3 flex flex-col gap-0.5">
+          <div className="px-4 py-2 flex flex-col gap-0.5">
             {debugLog.map((line,i)=>(
-              <p key={i} className="text-xs font-mono"
-                style={{color:line.includes("✓")||line.includes("🎵")?"#00ffaa":line.includes("✗")?"#ff6b6b":"rgba(255,255,255,0.5)"}}>
+              <p key={i} className="text-[11px] font-mono" style={{
+                color:line.includes("🎵")||line.includes("✓")?"#4ade80"
+                  :line.includes("✗")||line.includes("↺")?"#f87171"
+                  :line.includes("🔬")||line.includes("🔎")?"#00c6e0"
+                  :"rgba(255,255,255,0.5)"}}>
                 {line}
               </p>
             ))}
           </div>
           <div className="px-4 pb-3">
             <button onClick={()=>{debugRef.current=[];setDebugLog([]);}}
-              className="text-xs text-white/20 font-mono">limpar</button>
+              className="text-[10px] text-white/20 font-mono">limpar</button>
           </div>
         </div>
       )}
